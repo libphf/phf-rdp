@@ -5,7 +5,7 @@
  * bidirectional Clipboard sync, WASAPI System Audio player, and low-latency RDP Input.
  */
 
-import { HUDController } from './hud.js?v=22';
+import { HUDController } from './hud.js?v=23';
 
 let wasmModule = null;
 let cachedSrcPtr = 0;
@@ -563,28 +563,65 @@ class ScreenClient {
     let pendingDeadKey = null;
 
     const DEAD_MAP = {
-      '´': { 'a': 'á', 'e': 'é', 'i': 'í', 'o': 'ó', 'u': 'ú', 'c': 'ç', 'y': 'ý',
-             'A': 'Á', 'E': 'É', 'I': 'Í', 'O': 'Ó', 'U': 'Ú', 'C': 'Ç', 'Y': 'Ý', ' ': '´', '´': '´' },
-      '~': { 'a': 'ã', 'o': 'õ', 'n': 'ñ',
-             'A': 'Ã', 'O': 'Õ', 'N': 'Ñ', ' ': '~', '~': '~' },
-      '^': { 'a': 'â', 'e': 'ê', 'i': 'î', 'o': 'ô', 'u': 'û',
-             'A': 'Â', 'E': 'Ê', 'I': 'Î', 'O': 'Ô', 'U': 'Û', ' ': '^', '^': '^' },
-      '`': { 'a': 'à', 'e': 'è', 'i': 'ì', 'o': 'ò', 'u': 'ù',
-             'A': 'À', 'E': 'È', 'I': 'Ì', 'O': 'Ò', 'U': 'Ù', ' ': '`', '`': '`' },
-      '¨': { 'a': 'ä', 'e': 'ë', 'i': 'ï', 'o': 'ö', 'u': 'ü',
-             'A': 'Ä', 'E': 'Ë', 'I': 'Ï', 'O': 'Ö', 'U': 'Ü', ' ': '¨', '¨': '¨' }
+      '\u00B4': { 'a': '\u00E1', 'e': '\u00E9', 'i': '\u00ED', 'o': '\u00F3', 'u': '\u00FA', 'c': '\u00E7', 'y': '\u00FD',
+             'A': '\u00C1', 'E': '\u00C9', 'I': '\u00CD', 'O': '\u00D3', 'U': '\u00DA', 'C': '\u00C7', 'Y': '\u00DD', ' ': '\u00B4', '\u00B4': '\u00B4' },
+      '~': { 'a': '\u00E3', 'o': '\u00F5', 'n': '\u00F1', 'u': '\u0169', 'e': '\u1EBD', 'i': '\u0129',
+             'A': '\u00C3', 'O': '\u00D5', 'N': '\u00D1', 'U': '\u0168', 'E': '\u1EBC', 'I': '\u0128', ' ': '~', '~': '~', '\u02DC': '~' },
+      '^': { 'a': '\u00E2', 'e': '\u00EA', 'i': '\u00EE', 'o': '\u00F4', 'u': '\u00FB',
+             'A': '\u00C2', 'E': '\u00CA', 'I': '\u00CE', 'O': '\u00D4', 'U': '\u00DB', ' ': '^', '^': '^', '\u02C6': '^' },
+      '\u0060': { 'a': '\u00E0', 'e': '\u00E8', 'i': '\u00EC', 'o': '\u00F2', 'u': '\u00F9',
+             'A': '\u00C0', 'E': '\u00C8', 'I': '\u00CC', 'O': '\u00D2', 'U': '\u00D9', ' ': '\u0060', '\u0060': '\u0060' },
+      '\u00A8': { 'a': '\u00E4', 'e': '\u00EB', 'i': '\u00EF', 'o': '\u00F6', 'u': '\u00FC',
+             'A': '\u00C4', 'E': '\u00CB', 'I': '\u00CF', 'O': '\u00D6', 'U': '\u00DC', ' ': '\u00A8', '\u00A8': '\u00A8' }
     };
+    DEAD_MAP['\u02DC'] = DEAD_MAP['~'];
+    DEAD_MAP['\u02C6'] = DEAD_MAP['^'];
+
+    const isMac = (typeof navigator !== 'undefined') &&
+      (/(Mac|iPhone|iPod|iPad)/i.test(navigator.platform) || /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent));
+
+    function isDeadKey(e) {
+      if (e.key === 'Dead') return true;
+      if (e.key === '\u00B4' || e.key === '\u00A8' || e.key === '\u02DC' || e.key === '\u02C6' || e.key === '\u0060' || e.key === '') return true;
+      return false;
+    }
 
     function detectDeadSymbol(ev) {
-      // ABNT2: BracketLeft is [´ / `] next to P, BracketRight is [~ / ^] next to Ç
-      if (ev.code === 'BracketLeft')  return ev.shiftKey ? '`' : '´';
-      if (ev.code === 'BracketRight') return ev.shiftKey ? '^' : '~';
-      // US-International: Quote is [´ / ¨], Backquote is [` / ~]
-      if (ev.code === 'Quote')        return ev.shiftKey ? '¨' : '´';
-      if (ev.code === 'Backquote')    return ev.shiftKey ? '~' : '`';
-      if (ev.code === 'Digit6' && ev.shiftKey) return '^';
-      if (ev.code === 'Equal')        return ev.shiftKey ? '`' : '´';
-      return ev.shiftKey ? '`' : '´';
+      if (ev.key === '\u02DC' || ev.key === '~') return '~';
+      if (ev.key === '\u00B4') return '\u00B4';
+      if (ev.key === '\u02C6' || ev.key === '^') return '^';
+      if (ev.key === '\u0060' || ev.key === '') return '\u0060';
+      if (ev.key === '\u00A8') return '\u00A8';
+
+      // Mac Option chords: Option+N is ~, Option+E is ´, Option+I is ^, Option+U is ¨, Option+ is 
+      if (ev.altKey) {
+        if (ev.code === 'KeyN') return '~';
+        if (ev.code === 'KeyE') return '\u00B4';
+        if (ev.code === 'KeyI') return '^';
+        if (ev.code === 'KeyU') return '\u00A8';
+        if (ev.code === 'Backquote') return '\u0060';
+      }
+
+      if (isMac) {
+        // On Mac with Brazilian ABNT2:
+        // Key next to Ç (physical tilde/circumflex) reports 'Quote' or 'BracketRight':
+        if (ev.code === 'Quote' || ev.code === 'BracketRight') return ev.shiftKey ? '^' : '~';
+        // Key next to P (physical acute/grave) reports 'BracketLeft' or 'Equal':
+        if (ev.code === 'BracketLeft' || ev.code === 'Equal')  return ev.shiftKey ? '\u0060' : '\u00B4';
+        if (ev.code === 'Backquote' || ev.code === 'IntlBackslash') return ev.shiftKey ? '~' : '\u0060';
+      } else {
+        // Windows / Linux:
+        // ABNT2: BracketRight is [~ / ^] next to Ç, BracketLeft is [´ / ] next to P
+        if (ev.code === 'BracketRight') return ev.shiftKey ? '^' : '~';
+        if (ev.code === 'BracketLeft')  return ev.shiftKey ? '\u0060' : '\u00B4';
+        // US-International: Quote is [´ / ¨], Backquote is [ / ~]
+        if (ev.code === 'Quote')        return ev.shiftKey ? '\u00A8' : '\u00B4';
+        if (ev.code === 'Backquote')    return ev.shiftKey ? '~' : '\u0060';
+        if (ev.code === 'Digit6' && ev.shiftKey) return '^';
+        if (ev.code === 'Equal')        return ev.shiftKey ? '\u0060' : '\u00B4';
+      }
+
+      return ev.shiftKey ? '^' : '~';
     }
 
     const handleKey = (e, down) => {
@@ -592,15 +629,34 @@ class ScreenClient {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.altKey && (e.key === 'h' || e.key === 'H')) return;
 
-      // Allow Ctrl+V paste passthrough to window paste listener
+      // Allow Ctrl+V / Cmd+V paste passthrough to window paste listener
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V')) {
         return;
       }
 
-      // Brazilian ABNT2 & US-Intl Dead Key composition
-      if (e.key === 'Dead' || e.isComposing) {
+      // On Mac: map standard Cmd shortcuts (Cmd+C, Cmd+A, Cmd+Z, Cmd+S, Cmd+X, Cmd+F) to Windows Ctrl shortcuts
+      if (isMac && e.metaKey && !e.ctrlKey && !e.altKey) {
+        const k = e.key.toLowerCase();
+        const vkMap = { 'c': 0x43, 'a': 0x41, 'z': 0x5A, 's': 0x53, 'x': 0x58, 'f': 0x46 };
+        if (vkMap[k]) {
+          e.preventDefault();
+          this.sendVK(0xA2, down); // VK_LCONTROL
+          this.sendVK(vkMap[k], down);
+          return;
+        }
+      }
+
+      // Brazilian ABNT2, US-Intl & Mac Dead Key composition
+      if (isDeadKey(e)) {
         if (down) {
-          pendingDeadKey = detectDeadSymbol(e);
+          const sym = detectDeadSymbol(e);
+          // Pressing the same dead key twice (e.g. ~~ or ´´) outputs the literal symbol
+          if (pendingDeadKey && (pendingDeadKey === sym || (pendingDeadKey === '~' && sym === '\u02DC'))) {
+            this.sendUnicodeString(sym);
+            pendingDeadKey = null;
+          } else {
+            pendingDeadKey = sym;
+          }
         }
         e.preventDefault();
         return;
@@ -611,7 +667,16 @@ class ScreenClient {
         pendingDeadKey = null;
       }
 
-      const isShortcutCombo = e.ctrlKey || e.altKey || e.metaKey;
+      // Support Option+C on Mac for ç / Ç
+      if ((e.key === '\u00E7' || e.key === '\u00C7') && !e.ctrlKey && !e.metaKey) {
+        if (down) {
+          this.sendUnicodeString(e.key);
+        }
+        e.preventDefault();
+        return;
+      }
+
+      const isShortcutCombo = e.ctrlKey || (!isMac && e.altKey) || e.metaKey;
       const isPrintableChar = e.key && e.key.length === 1 && !isShortcutCombo;
 
       if (isPrintableChar) {
