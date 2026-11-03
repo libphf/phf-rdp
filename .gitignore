@@ -1,15 +1,19 @@
-# MSVC intermediate build artifacts
+# MSVC intermediate and binary build artifacts
 server/*.obj
 server/*.exp
 server/*.lib
+server/*.pdb
+server/*.exe
 server/*-next.*
+server/Release/
+server/Debug/
+
+# CMake build output
+server/build/
+server/phf-rdp-server
 
 # OS and Editor metadata
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# CMake build output (macOS/Linux)
-server/build/
-server/phf-rdp-server

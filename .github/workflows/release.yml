@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release (e.g. v1.3.1)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S server -B server/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build phf-rdp-server.exe
+        run: cmake --build server/build --config Release
+
+      - name: Package Windows Release Bundle
+        shell: pwsh
+        run: |
+          $exePath = (Get-ChildItem -Path server -Recurse -Filter "phf-rdp-server.exe" | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Path dist/server -Force
+          Copy-Item $exePath -Destination dist/server/phf-rdp-server.exe
+          Copy-Item -Recurse web dist/web
+          Copy-Item run.bat dist/run.bat
+          Copy-Item README.md dist/README.md
+          Copy-Item LICENSE dist/LICENSE
+          Compress-Archive -Path dist/* -DestinationPath phf-rdp-windows-x64.zip
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phf-rdp-windows-x64
+          path: phf-rdp-windows-x64.zip
+
+  build-macos:
+    name: Build macOS ARM64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S server -B server/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build phf-rdp-server
+        run: cmake --build server/build --config Release
+
+      - name: Package macOS Release Bundle
+        run: |
+          mkdir -p dist/server
+          if [ -f server/build/phf-rdp-server ]; then
+            cp server/build/phf-rdp-server dist/server/
+          elif [ -f server/phf-rdp-server ]; then
+            cp server/phf-rdp-server dist/server/
+          fi
+          cp -r web dist/web
+          cp README.md dist/README.md
+          cp LICENSE dist/LICENSE
+          tar -czvf phf-rdp-macos-arm64.tar.gz -C dist .
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phf-rdp-macos-arm64
+          path: phf-rdp-macos-arm64.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phf-rdp-windows-x64
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phf-rdp-macos-arm64
+
+      - name: Determine Release Tag
+        id: vars
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Release ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            phf-rdp-windows-x64.zip
+            phf-rdp-macos-arm64.tar.gz

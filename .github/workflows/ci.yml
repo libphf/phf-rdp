@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (MSVC)
+            os: windows-latest
+            flags: ""
+          - name: macOS (ScreenCaptureKit)
+            os: macos-latest
+            flags: "-DCMAKE_BUILD_TYPE=Release"
+          - name: Linux (Stub)
+            os: ubuntu-latest
+            flags: "-DCMAKE_BUILD_TYPE=Release"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S server -B server/build ${{ matrix.flags }}
+
+      - name: Build Server
+        run: cmake --build server/build --config Release
