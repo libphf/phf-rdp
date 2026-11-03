@@ -23,6 +23,8 @@ elseif(APPLE AND NOT PHF_RDP_STUB)
   # ScreenCaptureKit + CGEvent + NSPasteboard
   list(APPEND SOURCES src/capture_mac.m)
   set_source_files_properties(src/capture_mac.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PHF_RDP_STUB)
+  list(APPEND SOURCES src/capture_linux_x11.c)
 else()
   # No native capture backend yet: synthetic test pattern, no input/clipboard/audio.
   list(APPEND SOURCES src/capture_stub.c)
@@ -42,6 +44,9 @@ else()
       "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo"
       "-framework CoreGraphics" "-framework ApplicationServices" "-framework Carbon"
       "-framework AppKit" "-framework Foundation")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PHF_RDP_STUB)
+    find_package(X11 REQUIRED)
+    target_link_libraries(phf-rdp-server PRIVATE ${X11_LIBRARIES} Xext Xtst Xfixes Xrandr)
   endif()
 endif()
 

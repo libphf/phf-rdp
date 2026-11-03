@@ -50,6 +50,9 @@ phf-rdp/
 │   ├── src/
 │   │   ├── main.c            # Server loop, delta detector, and WebSocket hub
 │   │   ├── capture_win_dxgi.c# DirectX 11 DXGI Desktop Duplication, SendInput & WASAPI
+│   │   ├── capture_mac.m     # ScreenCaptureKit, CGEvent & NSPasteboard (macOS)
+│   │   ├── capture_linux_x11.c# MIT-SHM, XTest & XFixes native capture (Linux)
+│   │   ├── capture_stub.c    # Synthetic test pattern fallback
 │   │   ├── tray_win.c        # Dedicated Win32 tray thread with Unicode support
 │   │   ├── phf.c             # Pure High-Fidelity Format encoder/decoder
 │   │   ├── huff.c            # N-Huffman entropy codec
@@ -107,10 +110,19 @@ case; ordinary desktop use sends small delta frames):
 
 The default cap is 60 FPS; pass e.g. `1280 720 120` to allow 120.
 
-### 1c. Build Server (Linux, preview)
-There is no native Linux backend yet. Off Windows and macOS (or with `-DPHF_RDP_STUB=ON`) the
-server uses `src/capture_stub.c`, a synthetic test pattern (a moving block, so the delta path is
-exercised) that ignores input, clipboard and audio; useful to test the server and web client.
+### 1c. Build and Run Server (Linux X11)
+Native backend `src/capture_linux_x11.c`: MIT-SHM (`XShmGetImage`) for zero-copy 60 FPS screen capture,
+`XTest` extension for remote mouse and keyboard event injection, and `XFixes` for software cursor overlay.
+```bash
+# Ubuntu / Debian / Raspberry Pi OS dependencies:
+sudo apt-get install -y cmake build-essential libx11-dev libxext-dev libxtst-dev libxfixes-dev libxrandr-dev
+
+cd server
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+cd .. && ./server/phf-rdp-server [width height [fps]]
+```
+To run with the synthetic test pattern stub instead of native capture, pass `-DPHF_RDP_STUB=ON` to CMake.
 
 ### 2. Launch Server
 ```cmd
