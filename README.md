@@ -77,6 +77,41 @@ cd server
 build.bat
 ```
 
+### 1b. Build and Run Server (macOS 13+)
+Native backend `src/capture_mac.m`: ScreenCaptureKit for the screen (scaled on the GPU to the
+stream size) and system audio, `CGEventPost` for mouse and keyboard, `NSPasteboard` for the
+clipboard.
+```bash
+cd server
+cmake -S . -B build -DOpenMP_ROOT=$(brew --prefix libomp)   # OpenMP flag optional
+cmake --build build
+cd .. && ./server/phf-rdp-server [width height [fps]]       # run from the repo root
+```
+Permissions are granted to the app that launches the server (Terminal, iTerm, VS Code...), in
+System Settings > Privacy & Security; restart that app after granting them:
+- **Screen & System Audio Recording**: required (no frames without it).
+- **Accessibility**: required for remote mouse and keyboard.
+
+Keys: the client sends Windows virtual-key codes; on macOS, Meta/Win maps to Command, Ctrl to
+Control and Alt to Option, so a Mac client keeps its native shortcuts.
+
+Measured on an Apple M3 Pro with a full-screen animation (every frame is a keyframe, the worst
+case; ordinary desktop use sends small delta frames):
+
+| Display | Stream | FPS | Encode p50 | Bandwidth |
+| :--- | :--- | ---: | ---: | ---: |
+| External 2560x1440 @ 60 Hz | 1920x1080 | 60.0 (display-bound) | 12.9 ms | ~560 Mbps |
+| External 2560x1440 @ 60 Hz | 2560x1440 | 47.6 | 19.2 ms | ~870 Mbps |
+| Built-in Retina @ 120 Hz | 1672x1080 | 74.4 | 10.9 ms | ~530 Mbps |
+| Built-in Retina @ 120 Hz | 3456x2234 | 27.0 | 33.6 ms | ~900 Mbps |
+
+The default cap is 60 FPS; pass e.g. `1280 720 120` to allow 120.
+
+### 1c. Build Server (Linux, preview)
+There is no native Linux backend yet. Off Windows and macOS (or with `-DPHF_RDP_STUB=ON`) the
+server uses `src/capture_stub.c`, a synthetic test pattern (a moving block, so the delta path is
+exercised) that ignores input, clipboard and audio; useful to test the server and web client.
+
 ### 2. Launch Server
 ```cmd
 run.bat

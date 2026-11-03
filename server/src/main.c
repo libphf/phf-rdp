@@ -21,6 +21,22 @@ static CRITICAL_SECTION g_pkt_lock;
 static pthread_mutex_t g_pkt_lock = PTHREAD_MUTEX_INITIALIZER;
 #define PKT_LOCK()   pthread_mutex_lock(&g_pkt_lock)
 #define PKT_UNLOCK() pthread_mutex_unlock(&g_pkt_lock)
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
+/* Minimal POSIX equivalents of the Win32 interlocked primitives used below. */
+typedef long LONG;
+static inline LONG InterlockedExchange(volatile LONG *target, LONG value) {
+    return __atomic_exchange_n(target, value, __ATOMIC_SEQ_CST);
+}
+static inline LONG InterlockedCompareExchange(volatile LONG *target, LONG exchange, LONG comparand) {
+    /* Returns the initial value, like the Win32 function. */
+    __atomic_compare_exchange_n(target, &comparand, exchange, false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;
+}
 #endif
 
 #if defined(_WIN32)
@@ -31,7 +47,7 @@ static volatile bool g_server_paused = false;
 #define HTTP_URL "http://0.0.0.0:8080"
 #define WS_URL   "ws://0.0.0.0:8765"
 
-static struct mg_mgr g_mgr;
+static struct mg_mgr s_mgr;
 static volatile bool g_running = true;
 static volatile int g_target_w = 1280;
 static volatile int g_target_h = 720;
@@ -70,7 +86,7 @@ static void update_tray_status(void) {
     info.stream_h = th;
 
     int count = 0;
-    for (struct mg_connection *c = g_mgr.conns; c != NULL && count < TRAY_MAX_CLIENT_ENTRIES; c = c->next) {
+    for (struct mg_connection *c = s_mgr.conns; c != NULL && count < TRAY_MAX_CLIENT_ENTRIES; c = c->next) {
         if (c->is_websocket) {
             mg_snprintf(info.clients[count].ip_port, sizeof(info.clients[count].ip_port), "%M", mg_print_ip_port, &c->rem);
             info.clients[count].is_audio = (c->fn_data != NULL);
@@ -110,6 +126,9 @@ static void set_tcp_nodelay(struct mg_connection *c) {
 #if defined(_WIN32)
     BOOL nodelay = TRUE;
     setsockopt((SOCKET)(uintptr_t)c->fd, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+#else
+    int nodelay = 1;
+    setsockopt((int)(intptr_t)c->fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 #endif
 }
 
@@ -194,7 +213,7 @@ static void flush_latest_frame_to_clients(uint64_t *last_sent_seq) {
 
     if (!pkt_to_send) return;
 
-    for (struct mg_connection *c = g_mgr.conns; c != NULL; c = c->next) {
+    for (struct mg_connection *c = s_mgr.conns; c != NULL; c = c->next) {
         if (c->is_websocket) {
             /* Skip dedicated audio websocket connections (c->fn_data != NULL) */
             if (c->fn_data != NULL) {
@@ -223,7 +242,7 @@ static void broadcast_host_clipboard(const char *utf8_str, size_t utf8_len) {
     memcpy(pkt + 2, utf8_str, utf8_len);
 
     int count = 0;
-    for (struct mg_connection *c = g_mgr.conns; c != NULL; c = c->next) {
+    for (struct mg_connection *c = s_mgr.conns; c != NULL; c = c->next) {
         /* Send clipboard to video/main sockets only */
         if (c->is_websocket && c->fn_data == NULL) {
             mg_ws_send(c, (const char*)pkt, pkt_size, WEBSOCKET_OP_BINARY);
@@ -249,7 +268,7 @@ static void broadcast_audio_pcm(const int16_t *pcm, int num_frames, uint32_t sam
     memcpy(pkt + 6, &channels, sizeof(uint16_t));
     memcpy(pkt + 8, pcm, pcm_bytes);
 
-    for (struct mg_connection *c = g_mgr.conns; c != NULL; c = c->next) {
+    for (struct mg_connection *c = s_mgr.conns; c != NULL; c = c->next) {
         /* Send audio exclusively to dedicated audio sockets (c->fn_data != NULL)
          * or fallback to main sockets if no dedicated audio socket is connected */
         if (c->is_websocket && c->fn_data != NULL && c->send.len < 128 * 1024) {
@@ -297,7 +316,7 @@ static void send_server_state(struct mg_connection *target_c) {
     if (target_c) {
         mg_ws_send(target_c, (const char*)resp, 1 + jlen, WEBSOCKET_OP_BINARY);
     } else {
-        for (struct mg_connection *c = g_mgr.conns; c != NULL; c = c->next) {
+        for (struct mg_connection *c = s_mgr.conns; c != NULL; c = c->next) {
             if (c->is_websocket) {
                 mg_ws_send(c, (const char*)resp, 1 + jlen, WEBSOCKET_OP_BINARY);
             }
@@ -307,7 +326,7 @@ static void send_server_state(struct mg_connection *target_c) {
 }
 
 static const char* get_web_root(void) {
-    static char root_buf[MAX_PATH] = {0};
+    static char root_buf[512] = {0};
     if (root_buf[0] != '\0') return root_buf;
 
     const char *candidates[] = {
@@ -317,13 +336,19 @@ static const char* get_web_root(void) {
         "../../phf-rdp/web"
     };
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+#if defined(_WIN32)
         DWORD attr = GetFileAttributesA(candidates[i]);
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            strcpy_s(root_buf, sizeof(root_buf), candidates[i]);
+        int is_dir = (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY));
+#else
+        struct stat st;
+        int is_dir = (stat(candidates[i], &st) == 0 && S_ISDIR(st.st_mode));
+#endif
+        if (is_dir) {
+            snprintf(root_buf, sizeof(root_buf), "%s", candidates[i]);
             return root_buf;
         }
     }
-    strcpy_s(root_buf, sizeof(root_buf), "web");
+    snprintf(root_buf, sizeof(root_buf), "%s", "web");
     return root_buf;
 }
 
@@ -578,6 +603,8 @@ static void* capture_thread_func(void *arg)
         if (g_latest_pkt != NULL) {
 #if defined(_WIN32)
             Sleep(1);
+#else
+            usleep(500);
 #endif
             continue;
         }
@@ -757,13 +784,13 @@ int main(int argc, char *argv[]) {
     InitializeCriticalSection(&g_pkt_lock);
 #endif
 
-    mg_mgr_init(&g_mgr);
+    mg_mgr_init(&s_mgr);
 
-    if (mg_http_listen(&g_mgr, HTTP_URL, fn_http_ws, NULL) == NULL) {
+    if (mg_http_listen(&s_mgr, HTTP_URL, fn_http_ws, NULL) == NULL) {
         fprintf(stderr, "Failed to listen on %s\n", HTTP_URL);
         return 1;
     }
-    if (mg_http_listen(&g_mgr, WS_URL, fn_http_ws, NULL) == NULL) {
+    if (mg_http_listen(&s_mgr, WS_URL, fn_http_ws, NULL) == NULL) {
         fprintf(stderr, "Failed to listen on %s\n", WS_URL);
         return 1;
     }
@@ -794,7 +821,7 @@ int main(int argc, char *argv[]) {
 #endif
 
     while (g_running) {
-        mg_mgr_poll(&g_mgr, 1);
+        mg_mgr_poll(&s_mgr, 1);
         flush_latest_frame_to_clients(&last_sent_seq);
 
         double now = get_time_seconds();
@@ -842,7 +869,7 @@ int main(int argc, char *argv[]) {
 
     free(aud_pcm_buf);
     audio_loopback_close();
-    mg_mgr_free(&g_mgr);
+    mg_mgr_free(&s_mgr);
     printf("[Server] Stopped.\n");
     return 0;
 }

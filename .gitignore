@@ -9,3 +9,7 @@ server/*-next.*
 .idea/
 .DS_Store
 Thumbs.db
+
+# CMake build output (macOS/Linux)
+server/build/
+server/phf-rdp-server
