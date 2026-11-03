@@ -1061,13 +1061,13 @@ class ScreenClient {
     }
 
     // FPS & Mode calculation
-    const targetHz = (clientDisplayHz >= 45 && clientDisplayHz <= 240) ? clientDisplayHz : 60;
+    // Always report the frames actually decoded per second. The display refresh rate is
+    // shown separately in the stream mode line; it is not a stream measurement.
+    const displayHz = (clientDisplayHz >= 45 && clientDisplayHz <= 240) ? clientDisplayHz : 60;
     const isIdle = (streamFps < 20);
-    const fpsDisplay = isIdle ? String(targetHz) : String(Math.min(targetHz, Math.max(streamFps, 1)));
+    const fpsDisplay = String(streamFps);
     const fpsLabel = isIdle ? 'FPS (Ocioso)' : 'FPS (Ativo)';
-    const streamMode = isIdle
-      ? `${targetHz} Hz • Ocioso (${streamFps} delta/s)`
-      : `${targetHz} Hz • Ativo (${streamFps} fps)`;
+    const streamMode = `${isIdle ? 'Ocioso' : 'Ativo'} • ${streamFps} fps • tela ${displayHz} Hz`;
 
     // Lossless compression ratio & Delta bandwidth savings
     let ratio = compBytesWindow > 0 ? (rawBytesWindow / compBytesWindow) : 3.5;
