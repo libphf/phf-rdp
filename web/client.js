@@ -144,14 +144,112 @@ class ScreenClient {
 
   async start() {
     try {
-      this.statusText.textContent = "Carregando PHF WASM (SIMD)...";
-      await initWasm();
+      this.initWorkerPool();
       this.statusText.textContent = "Conectando ao PHF-RDP Server...";
       this.connectWebSocket();
     } catch (err) {
       this.statusText.textContent = `Erro na inicialização: ${err.message}`;
       console.error(err);
     }
+  }
+
+  initWorkerPool() {
+    this.workers = [];
+    this.nextWorkerIdx = 0;
+    this.nextFrameId = 0;
+    this.expectedFrameId = 0;
+    this.pendingFrames = new Map();
+
+    const numWorkers = Math.min(4, Math.max(2, Math.floor((navigator.hardwareConcurrency || 4) / 2)));
+    console.log(`[Client] Initializing ${numWorkers}x WebAssembly Decoder Workers...`);
+
+    for (let i = 0; i < numWorkers; i++) {
+      const w = new Worker('decode-worker.js?v=30');
+      w.onmessage = (e) => {
+        const data = e.data;
+        if (data.type === 'ready') return;
+        this.handleWorkerDecodedFrame(data);
+      };
+      w.postMessage({ type: 'init' });
+      this.workers.push(w);
+    }
+  }
+
+  handleWorkerDecodedFrame(data) {
+    if (data.error) {
+      console.error('[Worker] Decode error:', data.error);
+      return;
+    }
+    this.pendingFrames.set(data.frameId, data);
+    this.drainPendingFrames();
+  }
+
+  drainPendingFrames() {
+    while (this.pendingFrames.has(this.expectedFrameId)) {
+      const frame = this.pendingFrames.get(this.expectedFrameId);
+      this.pendingFrames.delete(this.expectedFrameId);
+      this.expectedFrameId++;
+      this.applyDecodedFrame(frame);
+    }
+    if (this.pendingFrames.size > 10) {
+      this.expectedFrameId = Math.min(...this.pendingFrames.keys());
+    }
+  }
+
+  applyDecodedFrame(frame) {
+    const { opcode, width, height, encMs, decMs, rx, ry, fullW, fullH, phfLen, buffer } = frame;
+    lastDecMs = decMs;
+
+    if (opcode === 0x01) {
+      // Full Keyframe
+      if (!currentImageData || this.canvas.width !== width || this.canvas.height !== height) {
+        this.canvas.width = width;
+        this.canvas.height = height;
+        this.streamWidth = width;
+        this.streamHeight = height;
+        currentImageData = this.ctx.createImageData(width, height);
+        this.fitCanvasToViewport();
+      }
+      currentImageData.data.set(new Uint8Array(buffer));
+      this.ctx.putImageData(currentImageData, 0, 0);
+
+      if (!this.firstFrameLogged) {
+        this.firstFrameLogged = true;
+        console.log(`[Client] Screen stream live: ${width}x${height} via ${this.workers.length}x Workers`);
+        this.statusOverlay.style.display = 'none';
+      }
+
+      frameCountWindow++;
+      fullFrameCountWindow++;
+      rawBytesWindow += width * height * 3;
+      compBytesWindow += phfLen;
+      fullEquivalentRawBytesWindow += width * height * 3;
+    } else if (opcode === 0x06) {
+      // Delta Sub-Frame
+      if (!currentImageData || this.canvas.width !== fullW || this.canvas.height !== fullH) {
+        return;
+      }
+      const decodedView = new Uint8Array(buffer);
+      const dstData = currentImageData.data;
+      const fullRowBytes = fullW * 4;
+      const subRowBytes = width * 4;
+
+      for (let y = 0; y < height; y++) {
+        const srcOffset = y * subRowBytes;
+        const dstOffset = (ry + y) * fullRowBytes + rx * 4;
+        dstData.set(decodedView.subarray(srcOffset, srcOffset + subRowBytes), dstOffset);
+      }
+      this.ctx.putImageData(currentImageData, 0, 0, rx, ry, width, height);
+
+      frameCountWindow++;
+      deltaFrameCountWindow++;
+      rawBytesWindow += width * height * 3;
+      compBytesWindow += phfLen;
+      fullEquivalentRawBytesWindow += fullW * fullH * 3;
+    }
+
+    if (encMs > 0) rollingEncMs = rollingEncMs * 0.7 + encMs * 0.3;
+    if (lastDecMs > 0) rollingDecMs = rollingDecMs * 0.7 + lastDecMs * 0.3;
   }
 
   initViewportListeners() {
@@ -848,7 +946,31 @@ class ScreenClient {
       bytesReceivedWindow += u8.length;
       const dv = new DataView(arrayBuffer);
       const encMs = dv.getFloat32(9, true);
-      this.decodeFullFrame(u8.subarray(13), encMs);
+      const phfData = u8.subarray(13);
+      if (phfData.length >= 20 && phfData[0] === 0x50 && phfData[1] === 0x48 && phfData[2] === 0x46 && phfData[3] === 0x31) {
+        const subDv = new DataView(phfData.buffer, phfData.byteOffset, phfData.byteLength);
+        const width = subDv.getUint32(8, true);
+        const height = subDv.getUint32(12, true);
+        if (width > 0 && height > 0 && this.workers.length > 0) {
+          const frameId = this.nextFrameId++;
+          const worker = this.workers[this.nextWorkerIdx];
+          this.nextWorkerIdx = (this.nextWorkerIdx + 1) % this.workers.length;
+          const u8Copy = new Uint8Array(phfData.length);
+          u8Copy.set(phfData);
+          worker.postMessage({
+            frameId,
+            opcode: 0x01,
+            u8: u8Copy,
+            width,
+            height,
+            encMs,
+            rx: 0,
+            ry: 0,
+            fullW: width,
+            fullH: height
+          }, [u8Copy.buffer]);
+        }
+      }
     } else if (opcode === 0x06 && u8.length >= 21) { // PKT_VIDEO_DELTA (Dirty Sub-Frame)
       bytesReceivedWindow += u8.length;
       const dv = new DataView(arrayBuffer);
@@ -857,7 +979,31 @@ class ScreenClient {
       const ry = dv.getUint16(15, true);
       const fullW = dv.getUint16(17, true);
       const fullH = dv.getUint16(19, true);
-      this.decodeDeltaFrame(u8.subarray(21), encMs, rx, ry, fullW, fullH);
+      const phfData = u8.subarray(21);
+      if (phfData.length >= 20 && phfData[0] === 0x50 && phfData[1] === 0x48 && phfData[2] === 0x46 && phfData[3] === 0x31) {
+        const subDv = new DataView(phfData.buffer, phfData.byteOffset, phfData.byteLength);
+        const rw = subDv.getUint32(8, true);
+        const rh = subDv.getUint32(12, true);
+        if (rw > 0 && rh > 0 && this.workers.length > 0) {
+          const frameId = this.nextFrameId++;
+          const worker = this.workers[this.nextWorkerIdx];
+          this.nextWorkerIdx = (this.nextWorkerIdx + 1) % this.workers.length;
+          const u8Copy = new Uint8Array(phfData.length);
+          u8Copy.set(phfData);
+          worker.postMessage({
+            frameId,
+            opcode: 0x06,
+            u8: u8Copy,
+            width: rw,
+            height: rh,
+            encMs,
+            rx,
+            ry,
+            fullW,
+            fullH
+          }, [u8Copy.buffer]);
+        }
+      }
     } else if (opcode === 0x02 && u8.length > 8) { // PKT_AUDIO (WASAPI Loopback PCM16)
       bytesReceivedWindow += u8.length;
       this.handleAudioPacket(arrayBuffer);
