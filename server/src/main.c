@@ -222,12 +222,15 @@ static void broadcast_host_clipboard(const char *utf8_str, size_t utf8_len) {
     pkt[1] = 0x00; /* From server */
     memcpy(pkt + 2, utf8_str, utf8_len);
 
+    int count = 0;
     for (struct mg_connection *c = g_mgr.conns; c != NULL; c = c->next) {
         /* Send clipboard to video/main sockets only */
         if (c->is_websocket && c->fn_data == NULL) {
             mg_ws_send(c, (const char*)pkt, pkt_size, WEBSOCKET_OP_BINARY);
+            count++;
         }
     }
+    printf("[Clipboard] Host clipboard changed (%zu bytes) broadcast to %d client(s)\n", utf8_len, count);
     free(pkt);
 }
 
@@ -407,6 +410,7 @@ static void fn_http_ws(struct mg_connection *c, int ev, void *ev_data) {
                 handle_input_packet(buf, wm->data.len);
             } else if (opcode == 0x05 && wm->data.len > 2) {
                 int trigger_paste = (buf[1] != 0) ? 1 : 0;
+                printf("[Clipboard] Received %zu bytes from client (trigger_paste=%d)\n", wm->data.len - 2, trigger_paste);
                 clipboard_set_utf8((const char*)(buf + 2), wm->data.len - 2, trigger_paste);
                 InterlockedExchange(&g_input_pending, 1);
             } else if (opcode == 0x03 && wm->data.len > 1) {

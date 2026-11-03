@@ -839,18 +839,10 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
     }
 
     if (!new_dxgi_frame) {
-        g_cap.idle_ticks++;
-        /* When DXGI is silent for >8 ticks (~130ms), capture live desktop via GDI */
-        if (g_cap.idle_ticks >= 8 || force_refresh) {
+        if (force_refresh) {
             seed_initial_frame_gdi();
-            /* If DXGI remains silent for >16 ticks (~260ms), permanently transition to GDI engine */
-            if (g_cap.idle_ticks >= 16) {
-                printf("[Capture] DXGI silent for >260ms (monitor disconnected/KVM switch). Transitioning to GDI engine...\n");
-                init_gdi_fallback();
-                return 0;
-            }
         } else {
-            return 1; /* Idle static frame: sleep 1ms */
+            return 1; /* Idle static frame: sleep 1ms (zero CPU, zero flickering) */
         }
     }
 
@@ -1017,15 +1009,35 @@ void input_inject_key(uint16_t vk_code, uint8_t down) {
 
     INPUT in = {0};
     in.type = INPUT_KEYBOARD;
-    in.ki.wVk = vk_code;
-    in.ki.wScan = (WORD)MapVirtualKeyA(vk_code, MAPVK_VK_TO_VSC);
-    in.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
-    if ((vk_code >= VK_PRIOR && vk_code <= VK_DOWN) ||
-        vk_code == VK_INSERT || vk_code == VK_DELETE ||
-        vk_code == VK_LWIN   || vk_code == VK_RWIN   ||
-        vk_code == VK_RMENU  || vk_code == VK_RCONTROL) {
-        in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    WORD effective_vk = (WORD)vk_code;
+    WORD scan = 0;
+    DWORD flags = down ? 0 : KEYEVENTF_KEYUP;
+
+    /* Normalize side-specific modifiers to standard VK codes with explicit hardware scan codes
+     * as required by SendInput for broad compatibility with Windows apps, Chromium, and terminals */
+    if (vk_code == VK_LCONTROL || vk_code == VK_RCONTROL || vk_code == VK_CONTROL) {
+        effective_vk = VK_CONTROL;
+        scan = 0x1D;
+        if (vk_code == VK_RCONTROL) flags |= KEYEVENTF_EXTENDEDKEY;
+    } else if (vk_code == VK_LSHIFT || vk_code == VK_RSHIFT || vk_code == VK_SHIFT) {
+        effective_vk = VK_SHIFT;
+        scan = (vk_code == VK_RSHIFT) ? 0x36 : 0x2A;
+    } else if (vk_code == VK_LMENU || vk_code == VK_RMENU || vk_code == VK_MENU) {
+        effective_vk = VK_MENU;
+        scan = 0x38;
+        if (vk_code == VK_RMENU) flags |= KEYEVENTF_EXTENDEDKEY;
+    } else {
+        scan = (WORD)MapVirtualKeyA(effective_vk, MAPVK_VK_TO_VSC);
+        if ((vk_code >= VK_PRIOR && vk_code <= VK_DOWN) ||
+            vk_code == VK_INSERT || vk_code == VK_DELETE ||
+            vk_code == VK_LWIN   || vk_code == VK_RWIN) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
     }
+
+    in.ki.wVk = effective_vk;
+    in.ki.wScan = scan;
+    in.ki.dwFlags = flags;
     SendInput(1, &in, sizeof(INPUT));
 }
 
@@ -1088,17 +1100,20 @@ int clipboard_set_utf8(const char *utf8_text, size_t utf8_len, int trigger_paste
 
     if (!ok) {
         GlobalFree(hMem);
+        printf("[Clipboard] Failed to open/set Windows clipboard (%zu bytes)\n", utf8_len);
         return -1;
     }
 
     g_last_clip_seq = GetClipboardSequenceNumber();
+    printf("[Clipboard] Set Windows clipboard from client (%zu bytes, trigger_paste=%d)\n", utf8_len, trigger_paste);
 
     if (trigger_paste) {
+        Sleep(10); /* Brief 10ms yield so Windows and target applications process the clipboard update */
         INPUT ins[4];
         memset(ins, 0, sizeof(ins));
         ins[0].type = INPUT_KEYBOARD;
         ins[0].ki.wVk = VK_CONTROL;
-        ins[0].ki.wScan = (WORD)MapVirtualKeyA(VK_CONTROL, MAPVK_VK_TO_VSC);
+        ins[0].ki.wScan = 0x1D;
 
         ins[1].type = INPUT_KEYBOARD;
         ins[1].ki.wVk = 'V';
@@ -1106,12 +1121,12 @@ int clipboard_set_utf8(const char *utf8_text, size_t utf8_len, int trigger_paste
 
         ins[2].type = INPUT_KEYBOARD;
         ins[2].ki.wVk = 'V';
-        ins[2].ki.wScan = (WORD)MapVirtualKeyA('V', MAPVK_VK_TO_VSC);
+        ins[2].ki.wScan = ins[1].ki.wScan;
         ins[2].ki.dwFlags = KEYEVENTF_KEYUP;
 
         ins[3].type = INPUT_KEYBOARD;
         ins[3].ki.wVk = VK_CONTROL;
-        ins[3].ki.wScan = (WORD)MapVirtualKeyA(VK_CONTROL, MAPVK_VK_TO_VSC);
+        ins[3].ki.wScan = 0x1D;
         ins[3].ki.dwFlags = KEYEVENTF_KEYUP;
 
         SendInput(4, ins, sizeof(INPUT));

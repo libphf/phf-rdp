@@ -41,15 +41,21 @@ html, body {
 }
 
 #rdp-input-trap {
-  position: fixed;
-  left: -9999px;
+  position: absolute;
   top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
-  opacity: 0;
-  pointer-events: none;
+  padding: 0;
+  margin: 0;
   border: none;
   outline: none;
+  opacity: 0.01;
+  background: transparent;
+  color: transparent;
+  overflow: hidden;
+  resize: none;
+  z-index: 1;
 }
 
 /* Status Overlay */

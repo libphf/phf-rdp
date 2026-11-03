@@ -22,6 +22,13 @@ export class HUDController {
     this.inputHint = document.getElementById('input-hint-text');
     this.resButtons = document.querySelectorAll('#res-selector .pill-btn');
 
+    /* Clipboard elements */
+    this.clipPreview = document.getElementById('hud-clip-preview');
+    this.clipStatus = document.getElementById('clip-status-indicator');
+    this.btnClipToPc = document.getElementById('btn-clip-to-pc');
+    this.btnClipToMac = document.getElementById('btn-clip-to-mac');
+    this.onSendClipboard = null;
+
     /* Metrics elements */
     this.valFps = document.getElementById('val-fps');
     this.lblFps = document.getElementById('lbl-fps');
@@ -44,6 +51,24 @@ export class HUDController {
     if (savedTop !== null) {
       this.trigger.style.top = `${savedTop}px`;
       this.trigger.style.transform = 'none';
+    }
+
+    // Restore remote control state (default to true so RDP works out-of-the-box!)
+    const savedInput = localStorage.getItem('phf_rdp_input_enabled');
+    const shouldEnableInput = savedInput === null ? true : (savedInput === 'true');
+    if (this.toggleInput) {
+      this.toggleInput.checked = shouldEnableInput;
+      this.inputEnabled = shouldEnableInput;
+      if (this.inputHint) {
+        this.inputHint.textContent = shouldEnableInput
+          ? 'Controle RDP ATIVO: cliques, teclado e Ctrl+C/Ctrl+V sincronizados (Alt+H abre/fecha HUD).'
+          : 'Ative para controlar mouse, teclado e Ctrl+C/Ctrl+V (Alt+H abre/fecha HUD).';
+      }
+      setTimeout(() => {
+        if (this.onInputToggle) {
+          this.onInputToggle(shouldEnableInput);
+        }
+      }, 50);
     }
 
     this.initEvents();
@@ -146,6 +171,7 @@ export class HUDController {
 
     this.toggleInput.addEventListener('change', (e) => {
       this.inputEnabled = e.target.checked;
+      localStorage.setItem('phf_rdp_input_enabled', String(this.inputEnabled));
       if (this.inputHint) {
         this.inputHint.textContent = this.inputEnabled
           ? 'Controle RDP ATIVO: cliques, teclado e Ctrl+C/Ctrl+V sincronizados (Alt+H abre/fecha HUD).'
@@ -155,6 +181,63 @@ export class HUDController {
         this.onInputToggle(this.inputEnabled);
       }
     });
+
+    if (this.btnClipToPc) {
+      this.btnClipToPc.addEventListener('click', async () => {
+        let text = this.clipPreview ? this.clipPreview.value : '';
+        if (!text && navigator.clipboard && navigator.clipboard.readText) {
+          try {
+            text = await navigator.clipboard.readText();
+            if (this.clipPreview) this.clipPreview.value = text;
+          } catch (_) {}
+        }
+        if (text && this.onSendClipboard) {
+          this.onSendClipboard(text, false);
+          if (this.clipStatus) {
+            this.clipStatus.textContent = 'Enviado ao PC!';
+            this.clipStatus.style.color = '#4ade80';
+            setTimeout(() => {
+              if (this.clipStatus) {
+                this.clipStatus.textContent = 'Sincronizado';
+                this.clipStatus.style.color = '';
+              }
+            }, 2000);
+          }
+        }
+      });
+    }
+
+    if (this.btnClipToMac) {
+      this.btnClipToMac.addEventListener('click', async () => {
+        const text = this.clipPreview ? this.clipPreview.value : '';
+        if (text) {
+          let copied = false;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            try {
+              await navigator.clipboard.writeText(text);
+              copied = true;
+            } catch (_) {}
+          }
+          if (!copied && this.clipPreview) {
+            this.clipPreview.select();
+            try {
+              document.execCommand('copy');
+              copied = true;
+            } catch (_) {}
+          }
+          if (this.clipStatus) {
+            this.clipStatus.textContent = 'Copiado ao Mac!';
+            this.clipStatus.style.color = '#4ade80';
+            setTimeout(() => {
+              if (this.clipStatus) {
+                this.clipStatus.textContent = 'Sincronizado';
+                this.clipStatus.style.color = '';
+              }
+            }, 2000);
+          }
+        }
+      });
+    }
 
     if (this.toggleAudio) {
       this.toggleAudio.addEventListener('change', (e) => {
@@ -269,6 +352,22 @@ export class HUDController {
     }
     if (stats.streamMode !== undefined && this.valStreamMode) {
       this.valStreamMode.textContent = stats.streamMode;
+    }
+  }
+
+  updateClipboardText(text) {
+    if (this.clipPreview && text) {
+      this.clipPreview.value = text;
+      if (this.clipStatus) {
+        this.clipStatus.textContent = 'Atualizado do PC!';
+        this.clipStatus.style.color = '#38bdf8';
+        setTimeout(() => {
+          if (this.clipStatus) {
+            this.clipStatus.textContent = 'Sincronizado';
+            this.clipStatus.style.color = '';
+          }
+        }, 2000);
+      }
     }
   }
 }

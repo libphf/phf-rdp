@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PHF-RDP | Ultra-Low Latency Desktop</title>
-  <link rel="stylesheet" href="style.css?v=25">
+  <link rel="stylesheet" href="style.css?v=29">
 </head>
 <body>
   <!-- Container principal de vídeo -->
   <div id="viewport-container">
     <canvas id="display-canvas" width="1280" height="720"></canvas>
-    <textarea id="rdp-input-trap" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" aria-hidden="true"></textarea>
+    <textarea id="rdp-input-trap" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
     
     <!-- Aviso de status / conexão -->
     <div id="status-overlay" class="overlay-msg">
@@ -125,11 +125,24 @@
           </div>
           <small class="hint-text" id="input-hint-text">Ative para controlar mouse, teclado e Ctrl+C/Ctrl+V (Alt+H abre/fecha HUD).</small>
         </div>
+
+        <!-- Área de Transferência Compartilhada (PC <-> Mac) -->
+        <div class="hud-section" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-weight: 500; font-size: 11px;">📋 Área de Transferência</span>
+            <span id="clip-status-indicator" style="font-size: 10px; opacity: 0.6;">Sincronizado</span>
+          </div>
+          <textarea id="hud-clip-preview" rows="2" style="width: 100%; font-size: 10px; font-family: monospace; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; color: #fff; padding: 4px; resize: none; box-sizing: border-box;" placeholder="Texto copiado (PC <-> Mac aparecerá aqui)..."></textarea>
+          <div style="display: flex; gap: 6px; margin-top: 6px;">
+            <button id="btn-clip-to-pc" class="preset-btn" style="flex: 1; padding: 4px 6px; font-size: 10px;" title="Enviar o texto desta caixa ou do Mac para o PC">⬆ Enviar ao PC</button>
+            <button id="btn-clip-to-mac" class="preset-btn" style="flex: 1; padding: 4px 6px; font-size: 10px;" title="Copiar o texto do PC para a área de transferência do Mac">⬇ Copiar ao Mac</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
-  <script src="phf.js?v=25"></script>
-  <script type="module" src="client.js?v=25"></script>
+  <script src="phf.js?v=29"></script>
+  <script type="module" src="client.js?v=29"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@
  * bidirectional Clipboard sync, WASAPI System Audio player, and low-latency RDP Input.
  */
 
-import { HUDController } from './hud.js?v=25';
+import { HUDController } from './hud.js?v=29';
 
 let wasmModule = null;
 let cachedSrcPtr = 0;
@@ -43,11 +43,15 @@ function measureDisplayRefresh() {
 }
 requestAnimationFrame(measureDisplayRefresh);
 
-/* Map browser KeyboardEvent.code / keyCode to Windows Virtual-Key (VK_*) codes */
+const IS_MAC = (typeof navigator !== 'undefined') &&
+  (/(Mac|iPhone|iPod|iPad)/i.test(navigator.platform) || /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent));
+
+/* Map browser KeyboardEvent.code / keyCode to Windows Virtual-Key (VK_*) codes.
+ * Physical Control maps to VK_CONTROL (0x11). Command (Meta) maps to Windows Key. */
 const CODE_TO_VK = {
   Backspace: 0x08, Tab: 0x09, Enter: 0x0D, NumpadEnter: 0x0D,
-  ShiftLeft: 0xA0, ShiftRight: 0xA1, ControlLeft: 0xA2, ControlRight: 0xA3,
-  AltLeft: 0xA4, AltRight: 0xA5, Pause: 0x13, CapsLock: 0x14, Escape: 0x1B,
+  ShiftLeft: 0x10, ShiftRight: 0x10, ControlLeft: 0x11, ControlRight: 0x11,
+  AltLeft: 0x12, AltRight: 0x12, Pause: 0x13, CapsLock: 0x14, Escape: 0x1B,
   Space: 0x20, PageUp: 0x21, PageDown: 0x22, End: 0x23, Home: 0x24,
   ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
   PrintScreen: 0x2C, Insert: 0x2D, Delete: 0x2E,
@@ -129,6 +133,7 @@ class ScreenClient {
       onMonitorChange: (monitorId) => this.selectMonitor(monitorId),
       onAudioToggle: (enabled) => this.toggleAudioStream(enabled)
     });
+    this.hud.onSendClipboard = (text, triggerPaste) => this.sendClipboardToServer(text, triggerPaste);
 
     this.initViewportListeners();
     this.initInputListeners();
@@ -509,6 +514,9 @@ class ScreenClient {
       if (this.inputTrap) {
         this.inputTrap.focus({ preventScroll: true });
       }
+      if (down) {
+        trySyncClipboardFromMac();
+      }
       const { x, y } = this.getNormalizedCanvasCoords(e.clientX, e.clientY);
       const pkt = new Uint8Array(8);
       pkt[0] = 0x04;
@@ -548,16 +556,43 @@ class ScreenClient {
       if (e.target && e.target.tagName === 'INPUT') return;
       e.preventDefault();
       const clipData = e.clipboardData || window.clipboardData;
-      const text = clipData ? clipData.getData('text/plain') : '';
-      if (text) {
+      let text = clipData ? clipData.getData('text/plain') : '';
+      if (!text && this.inputTrap && this.inputTrap.value) {
+        text = this.inputTrap.value;
+      }
+      if (text && text.length > 0) {
+        this.remoteClipboardText = text;
+        if (this.hud && this.hud.updateClipboardText) {
+          this.hud.updateClipboardText(text);
+        }
         this.sendClipboardToServer(text, true);
       } else {
-        this.sendVK(0xA2, true);
+        this.sendVK(0x11, true);
         this.sendVK(0x56, true);
         this.sendVK(0x56, false);
-        this.sendVK(0xA2, false);
+        this.sendVK(0x11, false);
       }
       if (this.inputTrap) this.inputTrap.value = '';
+    });
+
+    const trySyncClipboardFromMac = () => {
+      if (!this.inputEnabled || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(text => {
+          if (text && text.length > 0 && text !== this.remoteClipboardText) {
+            this.remoteClipboardText = text;
+            if (this.hud && this.hud.updateClipboardText) {
+              this.hud.updateClipboardText(text);
+            }
+            this.sendClipboardToServer(text, false);
+          }
+        }).catch(() => {});
+      }
+    };
+
+    window.addEventListener('focus', trySyncClipboardFromMac);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) trySyncClipboardFromMac();
     });
 
     let pendingDeadKey = null;
@@ -635,21 +670,94 @@ class ScreenClient {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (e.altKey && (e.key === 'h' || e.key === 'H')) return;
 
-      // Allow Ctrl+V / Cmd+V paste passthrough to window paste listener
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-        return;
-      }
-
-      // On Mac: map standard Cmd shortcuts (Cmd+C, Cmd+A, Cmd+Z, Cmd+S, Cmd+X, Cmd+F) to Windows Ctrl shortcuts
-      if (isMac && e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Windows PC Shortcuts strictly using physical CTRL (Cmd does NOT act as Ctrl on PC)
+      if (e.ctrlKey && !e.metaKey && !e.altKey) {
         const k = e.key.toLowerCase();
-        const vkMap = { 'c': 0x43, 'a': 0x41, 'z': 0x5A, 's': 0x53, 'x': 0x58, 'f': 0x46 };
-        if (vkMap[k]) {
+        if (k === 'c') {
           e.preventDefault();
-          this.sendVK(0xA2, down); // VK_LCONTROL
-          this.sendVK(vkMap[k], down);
+          if (down) {
+            this.sendVK(0x11, true); // VK_CONTROL
+            this.sendVK(0x43, true); // 'C'
+            this.sendVK(0x43, false);
+            this.sendVK(0x11, false);
+          }
           return;
         }
+        if (k === 'v') {
+          e.preventDefault();
+          if (down) {
+            this.sendVK(0x11, true); // VK_CONTROL
+            this.sendVK(0x56, true); // 'V'
+            this.sendVK(0x56, false);
+            this.sendVK(0x11, false);
+          }
+          return;
+        }
+        if (k === 'x') {
+          e.preventDefault();
+          if (down) {
+            this.sendVK(0x11, true);
+            this.sendVK(0x58, true); // 'X'
+            this.sendVK(0x58, false);
+            this.sendVK(0x11, false);
+          }
+          return;
+        }
+        if (k === 'a') {
+          e.preventDefault();
+          if (down) {
+            this.sendVK(0x11, true);
+            this.sendVK(0x41, true); // 'A'
+            this.sendVK(0x41, false);
+            this.sendVK(0x11, false);
+          }
+          return;
+        }
+        if (k === 'z') {
+          e.preventDefault();
+          if (down) {
+            if (e.shiftKey) {
+              this.sendVK(0x11, true);
+              this.sendVK(0x59, true); // 'Y' (Redo)
+              this.sendVK(0x59, false);
+              this.sendVK(0x11, false);
+            } else {
+              this.sendVK(0x11, true);
+              this.sendVK(0x5A, true); // 'Z' (Undo)
+              this.sendVK(0x5A, false);
+              this.sendVK(0x11, false);
+            }
+          }
+          return;
+        }
+        if (k === 's') {
+          e.preventDefault();
+          if (down) {
+            this.sendVK(0x11, true);
+            this.sendVK(0x53, true); // 'S'
+            this.sendVK(0x53, false);
+            this.sendVK(0x11, false);
+          }
+          return;
+        }
+        if (k === 'f') {
+          e.preventDefault();
+          if (down) {
+            this.sendVK(0x11, true);
+            this.sendVK(0x46, true); // 'F'
+            this.sendVK(0x46, false);
+            this.sendVK(0x11, false);
+          }
+          return;
+        }
+      }
+
+      // Allow Mac Cmd+V to pass through to window paste listener to paste Mac clipboard into PC
+      if (e.metaKey && !e.ctrlKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+        if (this.inputTrap) {
+          this.inputTrap.focus({ preventScroll: true });
+        }
+        return;
       }
 
       // Brazilian ABNT2, US-Intl & Mac Dead Key composition
@@ -759,6 +867,16 @@ class ScreenClient {
         this.remoteClipboardText = text;
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).catch(() => {});
+        }
+        if (this.inputTrap) {
+          this.inputTrap.value = text;
+          this.inputTrap.select();
+          try {
+            document.execCommand('copy');
+          } catch (_) {}
+        }
+        if (this.hud && this.hud.updateClipboardText) {
+          this.hud.updateClipboardText(text);
         }
       } catch (_) {}
     } else if (opcode === 0x03) { // PKT_JSON

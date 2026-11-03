@@ -21,12 +21,16 @@
 #define IDM_EXIT           4005
 
 static HWND g_tray_hwnd = NULL;
-static NOTIFYICONDATAA g_nid = {0};
+static HANDLE g_tray_thread = NULL;
+static DWORD g_tray_thread_id = 0;
+static NOTIFYICONDATAW g_nid = {0};
 static tray_action_cb_t g_tray_cb = NULL;
 static tray_status_info_t g_current_status = {0};
+static CRITICAL_SECTION g_tray_lock;
 static HICON g_hicon_active = NULL;
 static HICON g_hicon_paused = NULL;
 static bool g_console_hidden = false;
+static volatile bool g_tray_running = false;
 
 /* Create an antialiased 16x16 32-bit ARGB badge icon */
 static HICON create_tray_icon(bool is_paused) {
@@ -121,75 +125,89 @@ static void get_local_access_url(char *out_url, size_t max_len) {
     snprintf(out_url, max_len, "http://localhost:8080");
 }
 
+static void append_menu_utf8(HMENU hMenu, UINT uFlags, UINT_PTR uIDNewItem, const char *utf8_text) {
+    if (!utf8_text) {
+        AppendMenuW(hMenu, uFlags, uIDNewItem, NULL);
+        return;
+    }
+    wchar_t wbuf[256];
+    MultiByteToWideChar(CP_UTF8, 0, utf8_text, -1, wbuf, sizeof(wbuf) / sizeof(wbuf[0]));
+    AppendMenuW(hMenu, uFlags, uIDNewItem, wbuf);
+}
+
 static void show_tray_context_menu(void) {
     HMENU hMenu = CreatePopupMenu();
     if (!hMenu) return;
 
+    EnterCriticalSection(&g_tray_lock);
+    tray_status_info_t st = g_current_status;
+    LeaveCriticalSection(&g_tray_lock);
+
     /* 1. Header & Status */
     char title_buf[128];
     snprintf(title_buf, sizeof(title_buf), "● PHF-RDP Server v1.3 [%s]",
-             g_current_status.is_paused ? "PAUSADO" : "ATIVO");
-    AppendMenuA(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_TITLE, title_buf);
+             st.is_paused ? "PAUSADO" : "ATIVO");
+    append_menu_utf8(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_TITLE, title_buf);
 
     char res_buf[128];
-    if (g_current_status.source_w > 0 && g_current_status.stream_w > 0) {
+    if (st.source_w > 0 && st.stream_w > 0) {
         snprintf(res_buf, sizeof(res_buf), "  Tela: %dx%d -> %dx%d @ %d FPS",
-                 g_current_status.source_w, g_current_status.source_h,
-                 g_current_status.stream_w, g_current_status.stream_h,
-                 g_current_status.fps);
+                 st.source_w, st.source_h,
+                 st.stream_w, st.stream_h,
+                 st.fps);
     } else {
         snprintf(res_buf, sizeof(res_buf), "  Transmissão: 60 FPS Target");
     }
-    AppendMenuA(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_RES, res_buf);
+    append_menu_utf8(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_RES, res_buf);
 
     /* 2. Connected Clients info */
     char clients_hdr[128];
-    if (g_current_status.client_count <= 0) {
+    if (st.client_count <= 0) {
         snprintf(clients_hdr, sizeof(clients_hdr), "  Clientes conectados: Nenhum (Ocioso)");
-        AppendMenuA(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_CLIENTS, clients_hdr);
+        append_menu_utf8(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_CLIENTS, clients_hdr);
     } else {
-        snprintf(clients_hdr, sizeof(clients_hdr), "  Clientes conectados (%d):", g_current_status.client_count);
-        AppendMenuA(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_CLIENTS, clients_hdr);
+        snprintf(clients_hdr, sizeof(clients_hdr), "  Clientes conectados (%d):", st.client_count);
+        append_menu_utf8(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_STATUS_CLIENTS, clients_hdr);
 
-        for (int i = 0; i < g_current_status.clients_len && i < TRAY_MAX_CLIENT_ENTRIES; i++) {
+        for (int i = 0; i < st.clients_len && i < TRAY_MAX_CLIENT_ENTRIES; i++) {
             char client_row[128];
             snprintf(client_row, sizeof(client_row), "    • %s%s",
-                     g_current_status.clients[i].ip_port,
-                     g_current_status.clients[i].is_audio ? " [Áudio]" : " [Vídeo/RDP]");
-            AppendMenuA(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_CLIENT_FIRST + i, client_row);
+                     st.clients[i].ip_port,
+                     st.clients[i].is_audio ? " [Áudio]" : " [Vídeo/RDP]");
+            append_menu_utf8(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_CLIENT_FIRST + i, client_row);
         }
     }
 
-    AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+    append_menu_utf8(hMenu, MF_SEPARATOR, 0, NULL);
 
     /* 3. Actions */
-    AppendMenuA(hMenu, MF_STRING, IDM_OPEN_BROWSER, "🌐 Abrir Dashboard (http://localhost:8080)");
+    append_menu_utf8(hMenu, MF_STRING, IDM_OPEN_BROWSER, "🌐 Abrir Dashboard (http://localhost:8080)");
 
     char url_buf[128];
     get_local_access_url(url_buf, sizeof(url_buf));
     char copy_item[160];
     snprintf(copy_item, sizeof(copy_item), "📋 Copiar Link de Acesso (%s)", url_buf);
-    AppendMenuA(hMenu, MF_STRING, IDM_COPY_URL, copy_item);
+    append_menu_utf8(hMenu, MF_STRING, IDM_COPY_URL, copy_item);
 
     HWND hConsole = GetConsoleWindow();
     if (hConsole) {
-        AppendMenuA(hMenu, MF_STRING, IDM_TOGGLE_CONSOLE,
+        append_menu_utf8(hMenu, MF_STRING, IDM_TOGGLE_CONSOLE,
                     g_console_hidden ? "👁 Exibir Janela do Console" : "👁 Ocultar Janela do Console");
     }
 
-    AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+    append_menu_utf8(hMenu, MF_SEPARATOR, 0, NULL);
 
     /* 4. Pause / Resume */
-    if (g_current_status.is_paused) {
-        AppendMenuA(hMenu, MF_STRING, IDM_TOGGLE_PAUSE, "▶ Retomar Servidor");
+    if (st.is_paused) {
+        append_menu_utf8(hMenu, MF_STRING, IDM_TOGGLE_PAUSE, "▶ Retomar Servidor");
     } else {
-        AppendMenuA(hMenu, MF_STRING, IDM_TOGGLE_PAUSE, "⏸ Pausar Servidor");
+        append_menu_utf8(hMenu, MF_STRING, IDM_TOGGLE_PAUSE, "⏸ Pausar Servidor");
     }
 
-    AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+    append_menu_utf8(hMenu, MF_SEPARATOR, 0, NULL);
 
     /* 5. Exit */
-    AppendMenuA(hMenu, MF_STRING, IDM_EXIT, "❌ Fechar Servidor");
+    append_menu_utf8(hMenu, MF_STRING, IDM_EXIT, "❌ Fechar Servidor");
 
     /* Track menu */
     POINT pt;
@@ -229,92 +247,139 @@ static LRESULT CALLBACK tray_wnd_proc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
             if (g_tray_cb) g_tray_cb(TRAY_ACTION_EXIT);
         }
         return 0;
+    } else if (uMsg == WM_DESTROY) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        PostQuitMessage(0);
+        return 0;
     }
     return DefWindowProcA(hwnd, uMsg, wParam, lParam);
 }
 
-int tray_init(HINSTANCE hInstance, tray_action_cb_t cb) {
-    g_tray_cb = cb;
+static DWORD WINAPI tray_thread_func(LPVOID lpParam) {
+    (void)lpParam;
 
+    /* Attach dedicated tray thread to the interactive user desktop */
+    HDESK hInput = OpenInputDesktop(0, FALSE, GENERIC_ALL);
+    if (hInput) {
+        SetThreadDesktop(hInput);
+        CloseDesktop(hInput);
+    } else {
+        HDESK hDef = OpenDesktopA("Default", 0, FALSE, GENERIC_ALL);
+        if (hDef) {
+            SetThreadDesktop(hDef);
+            CloseDesktop(hDef);
+        }
+    }
+
+    HINSTANCE hInstance = GetModuleHandleA(NULL);
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = tray_wnd_proc;
-    wc.hInstance = hInstance ? hInstance : GetModuleHandleA(NULL);
+    wc.hInstance = hInstance;
     wc.lpszClassName = "PHF_RDP_TrayClass";
     RegisterClassA(&wc);
 
-    g_tray_hwnd = CreateWindowA(
+    /* Use a top-level invisible WS_POPUP window with WS_EX_TOOLWINDOW (NOT HWND_MESSAGE)
+     * so it receives all Shell_NotifyIcon notifications and context menu events properly */
+    g_tray_hwnd = CreateWindowExA(
+        WS_EX_TOOLWINDOW,
         "PHF_RDP_TrayClass", "PHF_RDP_TrayWindow",
-        0, 0, 0, 0, 0,
-        HWND_MESSAGE, NULL, wc.hInstance, NULL
+        WS_POPUP, 0, 0, 0, 0,
+        NULL, NULL, hInstance, NULL
     );
 
-    if (!g_tray_hwnd) return -1;
+    if (!g_tray_hwnd) {
+        return 1;
+    }
 
     g_hicon_active = create_tray_icon(false);
     g_hicon_paused = create_tray_icon(true);
 
     memset(&g_nid, 0, sizeof(g_nid));
-    g_nid.cbSize = sizeof(NOTIFYICONDATAA);
+    g_nid.cbSize = sizeof(NOTIFYICONDATAW);
     g_nid.hWnd = g_tray_hwnd;
     g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     g_nid.uCallbackMessage = WM_TRAY_NOTIFY;
     g_nid.hIcon = g_hicon_active;
-    strcpy_s(g_nid.szTip, sizeof(g_nid.szTip), "PHF-RDP Server (Ativo)\nhttp://localhost:8080");
 
-    /* Startup balloon */
-    strcpy_s(g_nid.szInfoTitle, sizeof(g_nid.szInfoTitle), "PHF-RDP Server Ativo");
-    strcpy_s(g_nid.szInfo, sizeof(g_nid.szInfo), "Streaming lossless 60 FPS pronto em http://localhost:8080");
+    MultiByteToWideChar(CP_UTF8, 0, "PHF-RDP Server (Ativo)\nhttp://localhost:8080", -1,
+                        g_nid.szTip, sizeof(g_nid.szTip) / sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, "PHF-RDP Server Ativo", -1,
+                        g_nid.szInfoTitle, sizeof(g_nid.szInfoTitle) / sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, "Streaming 60 FPS pronto em http://localhost:8080", -1,
+                        g_nid.szInfo, sizeof(g_nid.szInfo) / sizeof(wchar_t));
     g_nid.dwInfoFlags = NIIF_INFO;
 
-    Shell_NotifyIconA(NIM_ADD, &g_nid);
+    Shell_NotifyIconW(NIM_ADD, &g_nid);
+    g_tray_running = true;
+
+    MSG msg;
+    while (GetMessageA(&msg, NULL, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+
+    Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    if (g_hicon_active) DestroyIcon(g_hicon_active);
+    if (g_hicon_paused) DestroyIcon(g_hicon_paused);
+    g_hicon_active = NULL;
+    g_hicon_paused = NULL;
+    g_tray_running = false;
+    return 0;
+}
+
+int tray_init(HINSTANCE hInstance, tray_action_cb_t cb) {
+    (void)hInstance;
+    g_tray_cb = cb;
+    InitializeCriticalSection(&g_tray_lock);
+
+    g_tray_thread = CreateThread(NULL, 0, tray_thread_func, NULL, 0, &g_tray_thread_id);
+    if (!g_tray_thread) return -1;
     return 0;
 }
 
 void tray_poll(void) {
-    MSG msg;
-    while (PeekMessageA(&msg, g_tray_hwnd, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessageA(&msg);
-    }
+    /* No-op: handled in dedicated tray thread without blocking main server loop */
 }
 
 void tray_update(const tray_status_info_t *info) {
-    if (!info || !g_tray_hwnd) return;
+    if (!info || !g_tray_running || !g_tray_hwnd) return;
+
+    EnterCriticalSection(&g_tray_lock);
     g_current_status = *info;
+    LeaveCriticalSection(&g_tray_lock);
 
     g_nid.uFlags = NIF_ICON | NIF_TIP;
     g_nid.hIcon = info->is_paused ? g_hicon_paused : g_hicon_active;
 
+    char tip_buf[256];
     if (info->is_paused) {
-        snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+        snprintf(tip_buf, sizeof(tip_buf),
                  "PHF-RDP Server (Pausado)\nClientes: %d\nhttp://localhost:8080",
                  info->client_count);
     } else {
-        snprintf(g_nid.szTip, sizeof(g_nid.szTip),
+        snprintf(tip_buf, sizeof(tip_buf),
                  "PHF-RDP Server (%s)\n%dx%d @ %d FPS • Clientes: %d",
                  info->status_str ? info->status_str : "Ativo",
                  info->stream_w, info->stream_h, info->fps,
                  info->client_count);
     }
+    MultiByteToWideChar(CP_UTF8, 0, tip_buf, -1,
+                        g_nid.szTip, sizeof(g_nid.szTip) / sizeof(wchar_t));
 
-    Shell_NotifyIconA(NIM_MODIFY, &g_nid);
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
 void tray_close(void) {
     if (g_tray_hwnd) {
-        Shell_NotifyIconA(NIM_DELETE, &g_nid);
-        DestroyWindow(g_tray_hwnd);
-        g_tray_hwnd = NULL;
+        PostMessageA(g_tray_hwnd, WM_DESTROY, 0, 0);
     }
-    if (g_hicon_active) {
-        DestroyIcon(g_hicon_active);
-        g_hicon_active = NULL;
+    if (g_tray_thread) {
+        WaitForSingleObject(g_tray_thread, 1000);
+        CloseHandle(g_tray_thread);
+        g_tray_thread = NULL;
     }
-    if (g_hicon_paused) {
-        DestroyIcon(g_hicon_paused);
-        g_hicon_paused = NULL;
-    }
+    DeleteCriticalSection(&g_tray_lock);
 }
 
 #endif /* _WIN32 */
