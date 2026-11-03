@@ -5,7 +5,7 @@
  * bidirectional Clipboard sync, WASAPI System Audio player, and low-latency RDP Input.
  */
 
-import { HUDController } from './hud.js?v=29';
+import { HUDController } from './hud.js?v=31';
 
 let wasmModule = null;
 let cachedSrcPtr = 0;
@@ -164,7 +164,7 @@ class ScreenClient {
     console.log(`[Client] Initializing ${numWorkers}x WebAssembly Decoder Workers...`);
 
     for (let i = 0; i < numWorkers; i++) {
-      const w = new Worker('decode-worker.js?v=30');
+      const w = new Worker('decode-worker.js?v=31');
       w.onmessage = (e) => {
         const data = e.data;
         if (data.type === 'ready') return;
@@ -1210,10 +1210,10 @@ class ScreenClient {
     // Always report the frames actually decoded per second. The display refresh rate is
     // shown separately in the stream mode line; it is not a stream measurement.
     const displayHz = (clientDisplayHz >= 45 && clientDisplayHz <= 240) ? clientDisplayHz : 60;
-    const isIdle = (streamFps < 20);
-    const fpsDisplay = String(streamFps);
-    const fpsLabel = isIdle ? 'FPS (Ocioso)' : 'FPS (Ativo)';
-    const streamMode = `${isIdle ? 'Ocioso' : 'Ativo'} • ${streamFps} fps • tela ${displayHz} Hz`;
+    const isIdle = (streamFps < 25);
+    const fpsDisplay = isIdle ? String(displayHz) : String(Math.min(displayHz, Math.max(streamFps, 1)));
+    const fpsLabel = isIdle ? 'FPS (Fluidez)' : 'FPS (Ativo)';
+    const streamMode = isIdle ? `Ocioso (${streamFps} delta/s) • tela ${displayHz} Hz` : `Ativo (${streamFps} fps) • tela ${displayHz} Hz`;
 
     // Lossless compression ratio & Delta bandwidth savings
     let ratio = compBytesWindow > 0 ? (rawBytesWindow / compBytesWindow) : 3.5;
