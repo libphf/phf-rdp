@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PHF-RDP | Ultra-Low Latency Desktop</title>
+  <link rel="stylesheet" href="style.css?v=22">
+</head>
+<body>
+  <!-- Container principal de vídeo -->
+  <div id="viewport-container">
+    <canvas id="display-canvas" width="1280" height="720"></canvas>
+    <textarea id="rdp-input-trap" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" aria-hidden="true"></textarea>
+    
+    <!-- Aviso de status / conexão -->
+    <div id="status-overlay" class="overlay-msg">
+      <div class="spinner"></div>
+      <span id="status-text">Conectando ao PHF-RDP Server...</span>
+    </div>
+
+    <!-- Gatilho do HUD no canto superior direito (oculto/sutil) -->
+    <button id="hud-trigger" class="hud-trigger-corner" title="Abrir Painel HUD (Atalho: H ou Alt+H)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+    </button>
+
+    <!-- HUD Flutuante Arrastável e Retrátil -->
+    <div id="floating-hud" class="hud-panel hud-hidden">
+      <div id="hud-drag-handle" class="hud-header">
+        <div class="hud-title">
+          <span class="live-dot"></span>
+          <strong>PHF-RDP</strong>
+        </div>
+        <div class="hud-header-actions">
+          <button id="btn-fullscreen" class="icon-btn" title="Tela Cheia (F11 ou F)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+            </svg>
+          </button>
+          <button id="btn-minimize-hud" class="icon-btn" title="Ocultar HUD (H ou Alt+H)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="hud-body">
+        <!-- Seletor de Monitor (Físico / Virtual IddCx) -->
+        <div class="hud-section">
+          <label class="section-label" for="monitor-select">Monitor de Origem</label>
+          <select id="monitor-select" class="hud-select">
+            <option value="0">Display 1 (Detectando...)</option>
+          </select>
+        </div>
+
+        <!-- Seletor de Resolução / Escalonamento Inteligente -->
+        <div class="hud-section">
+          <label class="section-label">Escalonamento do Stream</label>
+          <div class="btn-group" id="res-selector">
+            <button class="pill-btn active" data-mode="auto" data-w="0" data-h="0" title="Ajusta automaticamente à janela do cliente sem nunca fazer upscale no servidor">Auto</button>
+            <button class="pill-btn" data-mode="cap" data-w="1280" data-h="720" title="Limita o envio a até 720p (fazendo upscale na GPU do cliente em telas maiores)">720p</button>
+            <button class="pill-btn" data-mode="cap" data-w="1920" data-h="1080" title="Limita o envio a até 1080p">1080p</button>
+            <button class="pill-btn" data-mode="native" data-w="0" data-h="0" title="Força resolução 1:1 nativa do monitor de origem">Nativo</button>
+          </div>
+        </div>
+
+        <!-- Estatísticas em tempo real -->
+        <div class="hud-section stats-grid">
+          <div class="stat-box">
+            <span class="stat-value" id="val-fps">60</span>
+            <span class="stat-name" id="lbl-fps">FPS</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="val-bitrate">0.0</span>
+            <span class="stat-name" id="lbl-bitrate">Mbps</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="val-enc">0.0 ms</span>
+            <span class="stat-name">Encode C</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="val-dec">0.0 ms</span>
+            <span class="stat-name">Decode WASM</span>
+          </div>
+        </div>
+
+        <!-- Informações de Stream e Escala -->
+        <div class="hud-section stream-info">
+          <div class="info-row">
+            <span>Monitor Origem:</span>
+            <span id="val-source-res" class="info-val">Detectando...</span>
+          </div>
+          <div class="info-row">
+            <span>Stream / Escala:</span>
+            <span id="val-res" class="info-val">Detectando...</span>
+          </div>
+          <div class="info-row">
+            <span>Compressão PHF:</span>
+            <span id="val-ratio" class="info-val">0.0x</span>
+          </div>
+          <div class="info-row">
+            <span>Modo de Stream:</span>
+            <span id="val-stream-mode" class="info-val">60 Hz • Ocioso (Delta)</span>
+          </div>
+        </div>
+
+        <!-- Controle Remoto (RDP Input + Clipboard) e Áudio do Sistema -->
+        <div class="hud-section">
+          <div class="toggle-row">
+            <span>Controle Remoto + Clipboard</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-input-control">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="toggle-row" style="margin-top: 6px;">
+            <span>Áudio do Sistema (WASAPI)</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-audio-stream">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <small class="hint-text" id="input-hint-text">Ative para controlar mouse, teclado e Ctrl+C/Ctrl+V (Alt+H abre/fecha HUD).</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="phf.js?v=22"></script>
+  <script type="module" src="client.js?v=22"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# MSVC intermediate build artifacts
+server/*.obj
+server/*.exp
+server/*.lib
+server/*-next.*
+
+# OS and Editor metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
