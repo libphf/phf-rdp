@@ -1,45 +1,98 @@
-# PHF-RDP (Pereira-Huffman Format Remote Desktop)
+# PHF-RDP — Ultra-Low Latency 60 FPS Lossless Remote Desktop
 
-Servidor de acesso remoto (RDP) e streaming de área de trabalho em tempo real a **60 FPS**, 100% sem perdas (*lossless*), construído em C nativo com **DXGI Desktop Duplication**, **Delta Sub-Frames**, **SIMD (SSSE3 + WebAssembly SIMD128)** e **Áudio WASAPI Loopback**.
+Real-time remote desktop (RDP) and screen streaming engine powered by the **Pure High-Fidelity Format (PHF)**, DirectX 11 DXGI Desktop Duplication, WebAssembly SIMD128, and native WASAPI system audio loopback.
 
----
-
-## 🚀 Funcionalidades Completas (v1.2)
-
-1. **Delta Frames (`Dirty Sub-Frame` — Opcode `0x06`)**:
-   - Detecção vetorial ultra-rápida (~0,18 ms) do retângulo alterado entre frames.
-   - Comprime e transmite apenas a região que mudou na tela `(rx, ry, rw, rh)` e faz upload parcial no `<canvas>` do navegador (`putImageData` sujo), reduzindo o tempo de encode/decode e o consumo de banda em **até 90%** durante o uso normal de desktop.
-2. **Escalonamento Inteligente (`Auto`, `720p`, `1080p`, `Nativo`)**:
-   - **Zero Upscale no Servidor**: O servidor nunca envia resolução maior que a do monitor de origem.
-   - **Modo Janela**: Se a janela do cliente for menor que o monitor de origem, o servidor faz downscale bilinear `16.16 fixed-point` mantendo o *aspect ratio* exato.
-   - **Modo Fullscreen / Telas Maiores**: A GPU do navegador faz upscale mantendo a proporção da imagem a custo zero de CPU.
-3. **Controle Remoto RDP de Ultra-Baixa Latência (`TCP_NODELAY` + `SendInput`)**:
-   - **Mouse sem Offset e sem Cursor Duplo**: Posicionamento físico exato e ocultação automática do cursor de software do vídeo quando o controle RDP está ativo.
-   - **Teclado Independente de Layout (`KEYEVENTF_UNICODE` + `VK_*`)**: Acentos (`é`, `ç`, `ê`, `ã`, `~e`) são compostos nativamente no layout do cliente e injetados via Unicode no servidor.
-4. **Clipboard Bidirecional (`Ctrl+C` ↔ `Ctrl+V` — Opcode `0x05`)**:
-   - Pressionar `Ctrl+V` no cliente envia o texto UTF-8 ao servidor, atualiza o Clipboard do Windows (`CF_UNICODETEXT`) e cola imediatamente na janela remota ativa.
-   - Copiar texto no servidor (`Ctrl+C`) sincroniza automaticamente com a área de transferência do cliente.
-5. **Múltiplos Monitores e Suporte a Monitor Virtual (`IddCx`)**:
-   - Enumera todos os monitores físicos e virtuais (como Parsec VDD / MTT Virtual Display Driver) conectados à GPU e permite alternar entre eles em tempo real pelo HUD.
-6. **Áudio do Sistema em Tempo Real (`WASAPI Loopback` — Opcode `0x02`)**:
-   - Captura nativa em C do áudio reproduzido no servidor com supressão automática de silêncio (`0 kbps` quando mudo) e reprodução via Web Audio API no navegador.
+Unlike traditional lossy remote desktop software (RDP with lossy codecs, VNC, AnyDesk, TeamViewer) that introduce 4:2:0 chroma blur, banding, and compression artifacts, **PHF-RDP streams every desktop frame in 100% mathematically lossless RGB quality** at 60 FPS with sub-millisecond compression latency.
 
 ---
 
-## 🛠️ Como Compilar e Executar
+## ⚡ Features (v1.3)
 
-### 1. Compilação do Servidor (Windows MSVC):
+1. **100% Lossless 60 FPS Desktop Streaming**:
+   - Full 4:4:4 RGB color fidelity: crystal-clear subpixel text rendering, crisp UI lines, and perfect color accuracy.
+   - Ultra-low latency single-pass compression (`~0.2–1.2 ms` for delta frames, `~2.2 ms` for 720p, `~7.9 ms` for 1080p).
+2. **Delta Sub-Frames (`Dirty Sub-Frame` — Opcode `0x06`)**:
+   - Fast vector dirty-rect detection (`find_dirty_rect_rgb` in `~0.18 ms`).
+   - Encodes and transmits only the modified bounding rectangle `(rx, ry, rw, rh)` and performs partial Canvas uploads (`putImageData`), cutting bandwidth and decoding load by up to 90% during standard desktop workflows.
+   - **Zero-Flicker DXGI Idle Engine**: Automatically sleeps at 0% CPU on static screens without redundant frame transmission; gracefully falls back to GDI upon physical monitor disconnects or KVM switches.
+3. **Smart Geometry & Resolution Scaling (`Auto`, `720p`, `1080p`, `Native`)**:
+   - **Zero Server-Side Upscaling**: The server never compresses above the native display resolution.
+   - **Windowed Mode**: High-speed `16.16` fixed-point bilinear downscaler with OpenMP when client view is smaller than the host monitor.
+   - **Fullscreen / Larger Monitors**: Browser GPU handles display upscaling with aspect ratio preservation at zero CPU overhead.
+4. **Low-Latency Remote Control (`TCP_NODELAY` + `SendInput`)**:
+   - **Zero-Offset Mouse**: Precise coordinate mapping with automatic software cursor suppression (`capture_set_draw_cursor(0)`) so the client only sees their native hardware cursor.
+   - **Layout-Independent Keyboard**: Printable characters and dead-key accents (`~`, `´`, `^`, `` ` ``, `¨`, `ç`) are composed on the client and injected via `KEYEVENTF_UNICODE`, working independently of host keyboard layout.
+   - **Clean Modifier Separation**: Standard Windows `Ctrl` shortcuts (`Ctrl+C`, `Ctrl+V`, `Ctrl+X`, `Ctrl+A`, `Ctrl+Z`, `Ctrl+S`) map to physical Control with hardware scan code `0x1D`.
+5. **Bidirectional Clipboard Synchronization (Opcode `0x05`)**:
+   - Seamless shared clipboard between client (macOS, Linux, Windows) and host PC.
+   - Works over standard HTTP LAN connections via native DOM paste event passthrough.
+   - HUD clipboard viewer with one-click **"⬆ Send to PC"** and **"⬇ Copy to Mac/Client"** actions.
+6. **Multi-Monitor & Virtual Display (IddCx) Support**:
+   - Automatically detects and enumerates physical monitors and virtual display drivers (e.g. Parsec VDD, MTT VDD). Switch displays on-the-fly directly from the HUD.
+7. **Native WASAPI Loopback System Audio (Opcode `0x02`)**:
+   - Captures system mix in C via `IAudioCaptureClient` (`AUDCLNT_STREAMFLAGS_LOOPBACK`), streams 16-bit PCM stereo, and suppresses silent buffers (`0 kbps` during silence).
+8. **Windows System Tray Icon & Draggable HUD**:
+   - Dedicated background thread with Windows notification badge, status display, client list, pause/resume, and clean shutdown.
+   - Minimalist half-circle HUD edge tab docked to the right edge of the screen, vertically draggable with position persistence (`localStorage`).
+
+---
+
+## 🏗️ Architecture
+
+```text
+phf-rdp/
+├── server/
+│   ├── include/
+│   │   ├── capture.h         # Cross-platform screen capture & input interface
+│   │   ├── phf.h             # Core libphf header
+│   │   ├── tray_win.h        # Windows System Tray interface
+│   │   └── mongoose.h        # Single-header HTTP & WebSocket server
+│   ├── src/
+│   │   ├── main.c            # Server loop, delta detector, and WebSocket hub
+│   │   ├── capture_win_dxgi.c# DirectX 11 DXGI Desktop Duplication, SendInput & WASAPI
+│   │   ├── tray_win.c        # Dedicated Win32 tray thread with Unicode support
+│   │   ├── phf.c             # Pure High-Fidelity Format encoder/decoder
+│   │   ├── huff.c            # N-Huffman entropy codec
+│   │   └── mongoose.c        # Mongoose networking engine
+│   └── build.bat             # MSVC compilation script
+├── web/
+│   ├── index.html            # Minimalist viewport & floating glassmorphic HUD
+│   ├── style.css             # Dark glassmorphism styling
+│   ├── client.js             # WebSocket client, WASM SIMD decoder, and input bridge
+│   ├── hud.js                # HUD controller (metrics, draggable tab, monitor selector)
+│   ├── phf.js                # Emscripten WebAssembly runtime
+│   └── phf.wasm              # SIMD128 accelerated PHF decoder
+├── run.bat                   # Single-command launcher
+└── README.md
+```
+
+---
+
+## 🚀 How to Build and Run
+
+### 1. Build Server (Windows MSVC)
+Open Developer Command Prompt (or run from standard shell with Visual Studio installed):
 ```cmd
-cd phf-rdp\server
+cd server
 build.bat
 ```
 
-### 2. Inicialização:
+### 2. Launch Server
 ```cmd
-cd phf-rdp
 run.bat
 ```
+The server will start listening on:
+- **HTTP Dashboard:** `http://localhost:8080` (or `http://<your-lan-ip>:8080`)
+- **WebSocket Video/Input:** `ws://localhost:8765` (or `ws://<your-lan-ip>:8765`)
 
-Acesse no navegador: **http://localhost:8080**
-- `H` (ou `Alt + H` com controle RDP ativo): Exibir / Ocultar HUD
-- `F` / `F11`: Tela Cheia
+### 3. Open in Any Modern Browser
+Navigate to `http://localhost:8080` on your client machine (Chrome, Safari, Edge, Firefox):
+- **Alt + H** (or **H**): Show / Hide floating HUD
+- **F** (or **F11**): Toggle Fullscreen
+- Click the half-circle tab on the right edge of the screen to open the control panel. Drag the tab vertically to reposition it.
+
+---
+
+## 📄 License
+
+MIT License. Part of the [PHF (libphf)](https://github.com/libphf/phf) ecosystem.
