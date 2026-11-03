@@ -35,6 +35,7 @@ typedef struct {
     int                     frame_acquired;
     int                     dxgi_has_frame;
     int                     idle_ticks;
+    int                     gdi_probe_ticks;
 
     /* GDI fallback resources */
     HDC                     hdc_screen;
@@ -128,7 +129,7 @@ static void ensure_rgb_buffer(int w, int h) {
     }
 }
 
-static void cleanup_resources(void) {
+static void cleanup_dxgi_only(void) {
     if (g_cap.duplication) {
         if (g_cap.frame_acquired) {
             g_cap.duplication->lpVtbl->ReleaseFrame(g_cap.duplication);
@@ -149,14 +150,16 @@ static void cleanup_resources(void) {
         g_cap.device->lpVtbl->Release(g_cap.device);
         g_cap.device = NULL;
     }
+    g_cap.dxgi_has_frame = 0;
+}
+
+static void cleanup_resources(void) {
+    cleanup_dxgi_only();
     if (g_cap.hbm_screen) {
         DeleteObject(g_cap.hbm_screen);
         g_cap.hbm_screen = NULL;
     }
-    if (g_cap.gdi_bits) {
-        free(g_cap.gdi_bits);
-        g_cap.gdi_bits = NULL;
-    }
+    g_cap.gdi_bits = NULL;
     if (g_cap.hdc_mem) {
         DeleteDC(g_cap.hdc_mem);
         g_cap.hdc_mem = NULL;
@@ -165,7 +168,6 @@ static void cleanup_resources(void) {
         ReleaseDC(NULL, g_cap.hdc_screen);
         g_cap.hdc_screen = NULL;
     }
-    g_cap.dxgi_has_frame = 0;
 }
 
 /* Enumerate all physical and virtual (IddCx) monitors attached to desktop */
@@ -386,14 +388,43 @@ static void draw_cursor_rgb(uint8_t *rgb, int w, int h, int screen_w, int screen
 }
 
 static int init_gdi_fallback(void) {
+    cleanup_dxgi_only();
+    if (g_cap.hbm_screen) {
+        DeleteObject(g_cap.hbm_screen);
+        g_cap.hbm_screen = NULL;
+    }
+    g_cap.gdi_bits = NULL;
+    if (g_cap.hdc_mem) {
+        DeleteDC(g_cap.hdc_mem);
+        g_cap.hdc_mem = NULL;
+    }
+    if (g_cap.hdc_screen) {
+        ReleaseDC(NULL, g_cap.hdc_screen);
+        g_cap.hdc_screen = NULL;
+    }
+
+    ensure_thread_desktop();
+
     g_cap.backend = CAPTURE_BACKEND_GDI;
     g_cap.hdc_screen = GetDC(NULL);
+    if (!g_cap.hdc_screen) return -1;
     g_cap.hdc_mem = CreateCompatibleDC(g_cap.hdc_screen);
+    if (!g_cap.hdc_mem) {
+        ReleaseDC(NULL, g_cap.hdc_screen);
+        g_cap.hdc_screen = NULL;
+        return -1;
+    }
 
     g_cap.monitor_left = 0;
     g_cap.monitor_top = 0;
-    g_cap.screen_w = GetSystemMetrics(SM_CXSCREEN);
-    g_cap.screen_h = GetSystemMetrics(SM_CYSCREEN);
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if (sw <= 0 || sh <= 0) {
+        sw = 1920;
+        sh = 1080;
+    }
+    g_cap.screen_w = sw;
+    g_cap.screen_h = sh;
 
     compute_smart_resolution(g_cap.screen_w, g_cap.screen_h, g_cap.req_w, g_cap.req_h, &g_cap.target_w, &g_cap.target_h);
 
@@ -406,23 +437,43 @@ static int init_gdi_fallback(void) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     g_cap.hbm_screen = CreateDIBSection(g_cap.hdc_screen, &bmi, DIB_RGB_COLORS, (void**)&g_cap.gdi_bits, NULL, 0);
+    if (!g_cap.hbm_screen || !g_cap.gdi_bits) {
+        DeleteDC(g_cap.hdc_mem);
+        g_cap.hdc_mem = NULL;
+        ReleaseDC(NULL, g_cap.hdc_screen);
+        g_cap.hdc_screen = NULL;
+        return -1;
+    }
     SelectObject(g_cap.hdc_mem, g_cap.hbm_screen);
 
     ensure_rgb_buffer(g_cap.target_w, g_cap.target_h);
+    g_cap.gdi_probe_ticks = 0;
 
     printf("[Capture] GDI BitBlt engine active (%dx%d -> %dx%d)\n",
            g_cap.screen_w, g_cap.screen_h, g_cap.target_w, g_cap.target_h);
     return 0;
 }
 
-/* Seed initial frame via GDI so DXGI never starts empty on a static desktop */
+/* Seed initial frame via GDI so DXGI never starts empty on a static desktop or monitor disconnect */
 static void seed_initial_frame_gdi(void) {
+    ensure_thread_desktop();
     HDC hdc_s = GetDC(NULL);
+    if (!hdc_s) return;
     HDC hdc_m = CreateCompatibleDC(hdc_s);
+    if (!hdc_m) {
+        ReleaseDC(NULL, hdc_s);
+        return;
+    }
+
+    int sw = g_cap.screen_w > 0 ? g_cap.screen_w : GetSystemMetrics(SM_CXSCREEN);
+    int sh = g_cap.screen_h > 0 ? g_cap.screen_h : GetSystemMetrics(SM_CYSCREEN);
+    if (sw <= 0) sw = 1920;
+    if (sh <= 0) sh = 1080;
+
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = g_cap.screen_w;
-    bmi.bmiHeader.biHeight = -g_cap.screen_h;
+    bmi.bmiHeader.biWidth = sw;
+    bmi.bmiHeader.biHeight = -sh;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -431,12 +482,12 @@ static void seed_initial_frame_gdi(void) {
     HBITMAP hbm = CreateDIBSection(hdc_s, &bmi, DIB_RGB_COLORS, (void**)&bits, NULL, 0);
     if (hbm && bits) {
         SelectObject(hdc_m, hbm);
-        BitBlt(hdc_m, 0, 0, g_cap.screen_w, g_cap.screen_h, hdc_s, g_cap.monitor_left, g_cap.monitor_top, SRCCOPY);
+        BitBlt(hdc_m, 0, 0, sw, sh, hdc_s, g_cap.monitor_left, g_cap.monitor_top, SRCCOPY | CAPTUREBLT);
         GdiFlush();
-        if (g_cap.target_w == g_cap.screen_w && g_cap.target_h == g_cap.screen_h) {
-            convert_bgra_to_rgb_same_size(bits, g_cap.screen_w * 4, g_cap.rgb_buffer, g_cap.target_w, g_cap.target_h);
+        if (g_cap.target_w == sw && g_cap.target_h == sh) {
+            convert_bgra_to_rgb_same_size(bits, sw * 4, g_cap.rgb_buffer, g_cap.target_w, g_cap.target_h);
         } else {
-            convert_bgra_to_rgb_bilinear(bits, g_cap.screen_w * 4, g_cap.screen_w, g_cap.screen_h, g_cap.rgb_buffer, g_cap.target_w, g_cap.target_h);
+            convert_bgra_to_rgb_bilinear(bits, sw * 4, sw, sh, g_cap.rgb_buffer, g_cap.target_w, g_cap.target_h);
         }
         g_cap.dxgi_has_frame = 1;
         DeleteObject(hbm);
@@ -647,11 +698,28 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
     }
 
     if (g_cap.backend == CAPTURE_BACKEND_GDI) {
-        if (!g_cap.hdc_screen || !g_cap.hdc_mem) {
+        if (!g_cap.hdc_screen || !g_cap.hdc_mem || !g_cap.gdi_bits) {
             if (init_gdi_fallback() != 0) return -1;
         }
 
-        BitBlt(g_cap.hdc_mem, 0, 0, g_cap.screen_w, g_cap.screen_h, g_cap.hdc_screen, g_cap.monitor_left, g_cap.monitor_top, SRCCOPY);
+        /* Probe if physical monitor reconnected to return to hardware DXGI (~every 2 seconds) */
+        g_cap.gdi_probe_ticks++;
+        if (g_cap.gdi_probe_ticks >= 120) {
+            g_cap.gdi_probe_ticks = 0;
+            if (try_init_dxgi() == 0) {
+                printf("[Capture] Physical monitor reconnected! Seamlessly returning to DXGI Duplication 60 FPS.\n");
+                return 0;
+            }
+        }
+
+        /* Check if screen resolution changed while in GDI (e.g. KVM disconnected/reconnected) */
+        int cur_w = GetSystemMetrics(SM_CXSCREEN);
+        int cur_h = GetSystemMetrics(SM_CYSCREEN);
+        if (cur_w > 0 && cur_h > 0 && (cur_w != g_cap.screen_w || cur_h != g_cap.screen_h)) {
+            init_gdi_fallback();
+        }
+
+        BitBlt(g_cap.hdc_mem, 0, 0, g_cap.screen_w, g_cap.screen_h, g_cap.hdc_screen, g_cap.monitor_left, g_cap.monitor_top, SRCCOPY | CAPTUREBLT);
 
         if (g_cap.draw_cursor) {
             CURSORINFO ci = {0};
@@ -718,10 +786,9 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
     );
 
     if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
-        if (init_capture() != 0) {
-            init_gdi_fallback();
-        }
-        return -2;
+        printf("[Capture] DXGI access lost (monitor disconnected/KVM switch). Falling back to GDI...\n");
+        init_gdi_fallback();
+        return 0;
     }
 
     if (SUCCEEDED(hr)) {
@@ -738,31 +805,31 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
                 acquired_texture->lpVtbl->Release(acquired_texture);
                 g_cap.dxgi_has_frame = 1;
                 new_dxgi_frame = 1;
+                g_cap.idle_ticks = 0;
             }
         }
         desktop_resource->lpVtbl->Release(desktop_resource);
     } else if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
-        /* Any other unexpected DXGI failure: fallback to GDI immediately */
+        printf("[Capture] DXGI Acquire error 0x%08X. Falling back to GDI...\n", (unsigned int)hr);
         init_gdi_fallback();
-        return -3;
+        return 0;
     }
 
-    if (!g_cap.dxgi_has_frame) {
-        return 1;
-    }
-
-    if (!new_dxgi_frame && !force_refresh) {
+    if (!new_dxgi_frame) {
         g_cap.idle_ticks++;
-        if (g_cap.idle_ticks < 6) {
-            return 1;
-        }
-        /* If DXGI has been silent for a while (e.g. static desktop or monitor turned off),
-         * test-refresh via GDI to ensure we never get stuck on a black screen */
-        if (g_cap.idle_ticks >= 60) {
+        /* When DXGI is silent for >15 ticks (~250ms), capture live desktop via GDI */
+        if (g_cap.idle_ticks >= 15 || force_refresh) {
             seed_initial_frame_gdi();
+            /* If DXGI remains silent for >45 ticks (~750ms), permanently transition to GDI engine */
+            if (g_cap.idle_ticks >= 45) {
+                printf("[Capture] DXGI silent for >750ms (monitor disconnected/KVM switch). Transitioning to GDI engine...\n");
+                init_gdi_fallback();
+                return 0;
+            }
+        } else {
+            return 1; /* Idle static frame: sleep 1ms */
         }
     }
-    g_cap.idle_ticks = 0;
 
     D3D11_MAPPED_SUBRESOURCE mapped;
     hr = g_cap.context->lpVtbl->Map(

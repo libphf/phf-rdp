@@ -627,6 +627,14 @@ static void* capture_thread_func(void *arg)
 #endif
             next_frame_time = get_time_seconds();
             continue;
+        } else {
+#if defined(_WIN32)
+            Sleep(2);
+#else
+            usleep(2000);
+#endif
+            next_frame_time = get_time_seconds();
+            continue;
         }
 
         /* High-precision 60 FPS frame pacing */
