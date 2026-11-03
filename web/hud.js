@@ -39,11 +39,61 @@ export class HUDController {
     this.dragOffsetY = 0;
     this.inputEnabled = false;
 
+    // Restore saved vertical position of trigger tab
+    const savedTop = localStorage.getItem('phf_hud_tab_top');
+    if (savedTop !== null) {
+      this.trigger.style.top = `${savedTop}px`;
+      this.trigger.style.transform = 'none';
+    }
+
     this.initEvents();
   }
 
   initEvents() {
-    this.trigger.addEventListener('click', () => this.toggleHUD());
+    // Vertical dragging & click handling for edge tab trigger
+    let isTabDragging = false;
+    let tabStartY = 0;
+    let tabStartTop = 0;
+    let tabMoved = false;
+
+    this.trigger.addEventListener('pointerdown', (e) => {
+      isTabDragging = true;
+      tabStartY = e.clientY;
+      const rect = this.trigger.getBoundingClientRect();
+      tabStartTop = rect.top;
+      tabMoved = false;
+      this.trigger.setPointerCapture(e.pointerId);
+      this.trigger.classList.add('tab-dragging');
+    });
+
+    this.trigger.addEventListener('pointermove', (e) => {
+      if (!isTabDragging) return;
+      const dy = e.clientY - tabStartY;
+      if (Math.abs(dy) > 3) {
+        tabMoved = true;
+      }
+      let newTop = tabStartTop + dy;
+      const h = this.trigger.offsetHeight || 56;
+      newTop = Math.max(10, Math.min(window.innerHeight - h - 10, newTop));
+      this.trigger.style.top = `${newTop}px`;
+      this.trigger.style.transform = 'none';
+    });
+
+    const finishTabDrag = (e) => {
+      if (!isTabDragging) return;
+      isTabDragging = false;
+      this.trigger.classList.remove('tab-dragging');
+      try { this.trigger.releasePointerCapture(e.pointerId); } catch (_) {}
+      if (tabMoved) {
+        const rect = this.trigger.getBoundingClientRect();
+        localStorage.setItem('phf_hud_tab_top', String(Math.round(rect.top)));
+      } else {
+        this.toggleHUD();
+      }
+    };
+
+    this.trigger.addEventListener('pointerup', finishTabDrag);
+    this.trigger.addEventListener('pointercancel', finishTabDrag);
     this.btnMinimize.addEventListener('click', () => this.hideHUD());
 
     window.addEventListener('keydown', (e) => {
@@ -137,12 +187,14 @@ export class HUDController {
 
   showHUD() {
     this.panel.classList.remove('hud-hidden');
-    this.trigger.style.opacity = '0.1';
+    this.trigger.classList.add('hud-open');
+    this.trigger.style.opacity = '0.2';
   }
 
   hideHUD() {
     this.panel.classList.add('hud-hidden');
-    this.trigger.style.opacity = '0.35';
+    this.trigger.classList.remove('hud-open');
+    this.trigger.style.opacity = '';
   }
 
   startDrag(e) {

@@ -26,7 +26,8 @@ cl.exe /nologo /O2 /openmp /MD /I include /I src ^
     src\phf.c ^
     src\huff.c ^
     src\mongoose.c ^
-    /link d3d11.lib dxgi.lib dxguid.lib gdi32.lib user32.lib ws2_32.lib winmm.lib ole32.lib ^
+    src\tray_win.c ^
+    /link d3d11.lib dxgi.lib dxguid.lib gdi32.lib user32.lib ws2_32.lib winmm.lib ole32.lib shell32.lib ^
     /out:phf-rdp-server.exe
 
 if errorlevel 1 (

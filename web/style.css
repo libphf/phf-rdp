@@ -86,33 +86,71 @@ html, body {
   to { transform: rotate(360deg); }
 }
 
-/* Gatilho sutil do HUD nos cantos */
-.hud-trigger-corner {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: rgba(18, 24, 38, 0.45);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+/* Gatilho discreto do HUD no lado direito (Aba semi-circular arrastável verticalmente) */
+.hud-edge-tab {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 56px;
+  border-radius: 28px 0 0 28px;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-right: none;
   color: #94a3b8;
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.35;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: grab;
   z-index: 1000;
+  opacity: 0.4;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.25s,
+              color 0.25s,
+              opacity 0.25s,
+              box-shadow 0.25s;
 }
 
-.hud-trigger-corner:hover {
-  opacity: 1;
-  transform: scale(1.08);
-  background: rgba(30, 41, 59, 0.85);
+.hud-edge-tab:hover {
+  width: 30px;
+  opacity: 0.95;
+  background: rgba(30, 41, 59, 0.9);
   color: #38bdf8;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-color: rgba(56, 189, 248, 0.45);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.45), 0 0 12px rgba(56, 189, 248, 0.25);
+}
+
+.hud-edge-tab.tab-dragging {
+  cursor: grabbing !important;
+  opacity: 1;
+  width: 32px;
+  background: rgba(30, 41, 59, 0.95);
+  color: #38bdf8;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.6);
+}
+
+.hud-edge-tab svg {
+  margin-left: 2px;
+  transition: transform 0.25s ease;
+  pointer-events: none;
+}
+
+.hud-edge-tab:hover svg {
+  transform: translateX(-2px);
+}
+
+.hud-edge-tab.hud-open svg {
+  transform: rotate(180deg);
+}
+
+.hud-edge-tab.hud-open:hover svg {
+  transform: rotate(180deg) translateX(-2px);
 }
 
 /* Painel HUD Flutuante Arrastável */

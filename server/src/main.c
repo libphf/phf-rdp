@@ -23,6 +23,11 @@ static pthread_mutex_t g_pkt_lock = PTHREAD_MUTEX_INITIALIZER;
 #define PKT_UNLOCK() pthread_mutex_unlock(&g_pkt_lock)
 #endif
 
+#if defined(_WIN32)
+#include "tray_win.h"
+static volatile bool g_server_paused = false;
+#endif
+
 #define HTTP_URL "http://0.0.0.0:8080"
 #define WS_URL   "ws://0.0.0.0:8765"
 
@@ -35,6 +40,47 @@ static volatile int g_ws_client_count = 0;
 static volatile LONG g_input_pending = 0;
 static volatile LONG g_force_keyframe = 1;
 static volatile LONG g_audio_enabled = 0;
+
+#if defined(_WIN32)
+static void on_tray_action(int action_id) {
+    if (action_id == TRAY_ACTION_TOGGLE_PAUSE) {
+        g_server_paused = !g_server_paused;
+        if (!g_server_paused) {
+            InterlockedExchange(&g_force_keyframe, 1);
+        }
+        printf("[Server] %s via Tray Icon.\n", g_server_paused ? "Pausado" : "Retomado");
+    } else if (action_id == TRAY_ACTION_EXIT) {
+        printf("[Server] Encerrando servidor via Tray Icon...\n");
+        g_running = false;
+    }
+}
+
+static void update_tray_status(void) {
+    tray_status_info_t info = {0};
+    info.is_paused = g_server_paused;
+    info.status_str = g_server_paused ? "Pausado" : (g_ws_client_count > 0 ? "Ativo" : "Ocioso");
+    info.client_count = g_ws_client_count;
+    info.fps = g_target_fps;
+
+    int sw = 0, sh = 0, tw = 0, th = 0;
+    capture_get_geometry(&sw, &sh, &tw, &th);
+    info.source_w = sw;
+    info.source_h = sh;
+    info.stream_w = tw;
+    info.stream_h = th;
+
+    int count = 0;
+    for (struct mg_connection *c = g_mgr.conns; c != NULL && count < TRAY_MAX_CLIENT_ENTRIES; c = c->next) {
+        if (c->is_websocket) {
+            mg_snprintf(info.clients[count].ip_port, sizeof(info.clients[count].ip_port), "%M", mg_print_ip_port, &c->rem);
+            info.clients[count].is_audio = (c->fn_data != NULL);
+            count++;
+        }
+    }
+    info.clients_len = count;
+    tray_update(&info);
+}
+#endif
 
 /* Latest encoded packet mailbox (single-slot, zero-queue latency) */
 static uint8_t *g_latest_pkt = NULL;
@@ -508,6 +554,13 @@ static void* capture_thread_func(void *arg)
     double next_frame_time = get_time_seconds();
 
     while (g_running) {
+#if defined(_WIN32)
+        if (g_server_paused) {
+            Sleep(50);
+            next_frame_time = get_time_seconds();
+            continue;
+        }
+#endif
         if (g_ws_client_count <= 0) {
 #if defined(_WIN32)
             Sleep(30);
@@ -730,13 +783,26 @@ int main(int argc, char *argv[]) {
     uint64_t last_sent_seq = 0;
     double last_clip_poll = get_time_seconds();
     double last_aud_poll = get_time_seconds();
+#if defined(_WIN32)
+    tray_init(GetModuleHandleA(NULL), on_tray_action);
+    update_tray_status();
+    double last_tray_poll = get_time_seconds();
+#endif
 
     while (g_running) {
         mg_mgr_poll(&g_mgr, 1);
         flush_latest_frame_to_clients(&last_sent_seq);
 
+        double now = get_time_seconds();
+#if defined(_WIN32)
+        tray_poll();
+        if (now - last_tray_poll >= 0.5) {
+            last_tray_poll = now;
+            update_tray_status();
+        }
+#endif
+
         if (g_ws_client_count > 0) {
-            double now = get_time_seconds();
 
             /* Poll WASAPI loopback audio in 40ms batches (25 pkt/s instead of 125 pkt/s)
              * so audio never contends with video frames or main-thread WebSocket events */
@@ -762,6 +828,7 @@ int main(int argc, char *argv[]) {
     }
 
 #if defined(_WIN32)
+    tray_close();
     WaitForSingleObject(hThread, 2000);
     CloseHandle(hThread);
     timeEndPeriod(1);

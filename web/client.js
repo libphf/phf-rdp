@@ -5,7 +5,7 @@
  * bidirectional Clipboard sync, WASAPI System Audio player, and low-latency RDP Input.
  */
 
-import { HUDController } from './hud.js?v=24';
+import { HUDController } from './hud.js?v=25';
 
 let wasmModule = null;
 let cachedSrcPtr = 0;
