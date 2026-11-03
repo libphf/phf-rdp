@@ -5,7 +5,7 @@
  * bidirectional Clipboard sync, WASAPI System Audio player, and low-latency RDP Input.
  */
 
-import { HUDController } from './hud.js?v=23';
+import { HUDController } from './hud.js?v=24';
 
 let wasmModule = null;
 let cachedSrcPtr = 0;
@@ -582,7 +582,13 @@ class ScreenClient {
 
     function isDeadKey(e) {
       if (e.key === 'Dead') return true;
-      if (e.key === '\u00B4' || e.key === '\u00A8' || e.key === '\u02DC' || e.key === '\u02C6' || e.key === '\u0060' || e.key === '') return true;
+      if (e.key === '~' || e.key === '\u02DC' ||
+          e.key === '\u00B4' ||
+          e.key === '^' || e.key === '\u02C6' ||
+          e.key === '' || e.key === '\u0060' ||
+          e.key === '\u00A8') {
+        return true;
+      }
       return false;
     }
 
@@ -649,6 +655,10 @@ class ScreenClient {
       // Brazilian ABNT2, US-Intl & Mac Dead Key composition
       if (isDeadKey(e)) {
         if (down) {
+          if (e.repeat) {
+            e.preventDefault();
+            return;
+          }
           const sym = detectDeadSymbol(e);
           // Pressing the same dead key twice (e.g. ~~ or ´´) outputs the literal symbol
           if (pendingDeadKey && (pendingDeadKey === sym || (pendingDeadKey === '~' && sym === '\u02DC'))) {
@@ -684,7 +694,15 @@ class ScreenClient {
           e.preventDefault();
           let charToSend = e.key;
           if (pendingDeadKey) {
-            charToSend = DEAD_MAP[pendingDeadKey]?.[e.key] || (pendingDeadKey + e.key);
+            // If the character from OS/browser is already accented (e.g. Mac native composition 'ã', 'é', 'à', 'õ'),
+            // use it directly without prepending the pending dead key!
+            if (/[\u00C0-\u00FF\u0100-\u017F]/.test(e.key)) {
+              charToSend = e.key;
+            } else if (DEAD_MAP[pendingDeadKey]?.[e.key]) {
+              charToSend = DEAD_MAP[pendingDeadKey][e.key];
+            } else {
+              charToSend = pendingDeadKey + e.key;
+            }
             pendingDeadKey = null;
           }
           this.sendUnicodeString(charToSend);
