@@ -585,11 +585,34 @@ static int try_init_dxgi(void) {
                     ID3D11Texture2D *staging = NULL;
                     hr = dev->lpVtbl->CreateTexture2D(dev, &staging_desc, NULL, &staging);
                     if (SUCCEEDED(hr)) {
+                        /* Validate that DXGI is actually presenting active frames (not headless/disconnected) */
+                        DXGI_OUTDUPL_FRAME_INFO test_info = {0};
+                        IDXGIResource *test_res = NULL;
+                        HRESULT hr_test = dupl->lpVtbl->AcquireNextFrame(dupl, 25, &test_info, &test_res);
+                        if (FAILED(hr_test) || test_info.LastPresentTime.QuadPart == 0) {
+                            if (SUCCEEDED(hr_test) && test_res) {
+                                test_res->lpVtbl->Release(test_res);
+                                dupl->lpVtbl->ReleaseFrame(dupl);
+                            }
+                            staging->lpVtbl->Release(staging);
+                            dupl->lpVtbl->Release(dupl);
+                            dev->lpVtbl->Release(dev);
+                            ctx->lpVtbl->Release(ctx);
+                            output1->lpVtbl->Release(output1);
+                            adapter->lpVtbl->Release(adapter);
+                            factory->lpVtbl->Release(factory);
+                            return -1;
+                        }
+
+                        if (test_res) test_res->lpVtbl->Release(test_res);
+                        dupl->lpVtbl->ReleaseFrame(dupl);
+
                         g_cap.backend = CAPTURE_BACKEND_DXGI;
                         g_cap.device = dev;
                         g_cap.context = ctx;
                         g_cap.duplication = dupl;
                         g_cap.staging_texture = staging;
+                        g_cap.idle_ticks = 0;
 
                         ensure_rgb_buffer(g_cap.target_w, g_cap.target_h);
                         seed_initial_frame_gdi();
@@ -702,9 +725,9 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
             if (init_gdi_fallback() != 0) return -1;
         }
 
-        /* Probe if physical monitor reconnected to return to hardware DXGI (~every 2 seconds) */
+        /* Probe if physical monitor reconnected to return to hardware DXGI (~every 5 seconds) */
         g_cap.gdi_probe_ticks++;
-        if (g_cap.gdi_probe_ticks >= 120) {
+        if (g_cap.gdi_probe_ticks >= 300) {
             g_cap.gdi_probe_ticks = 0;
             if (try_init_dxgi() == 0) {
                 printf("[Capture] Physical monitor reconnected! Seamlessly returning to DXGI Duplication 60 FPS.\n");
@@ -817,12 +840,12 @@ int capture_acquire_frame(capture_frame_t *frame, int timeout_ms) {
 
     if (!new_dxgi_frame) {
         g_cap.idle_ticks++;
-        /* When DXGI is silent for >15 ticks (~250ms), capture live desktop via GDI */
-        if (g_cap.idle_ticks >= 15 || force_refresh) {
+        /* When DXGI is silent for >8 ticks (~130ms), capture live desktop via GDI */
+        if (g_cap.idle_ticks >= 8 || force_refresh) {
             seed_initial_frame_gdi();
-            /* If DXGI remains silent for >45 ticks (~750ms), permanently transition to GDI engine */
-            if (g_cap.idle_ticks >= 45) {
-                printf("[Capture] DXGI silent for >750ms (monitor disconnected/KVM switch). Transitioning to GDI engine...\n");
+            /* If DXGI remains silent for >16 ticks (~260ms), permanently transition to GDI engine */
+            if (g_cap.idle_ticks >= 16) {
+                printf("[Capture] DXGI silent for >260ms (monitor disconnected/KVM switch). Transitioning to GDI engine...\n");
                 init_gdi_fallback();
                 return 0;
             }
